@@ -68,4 +68,11 @@ config DRM_AMD_DC_KUNIT_TEST
 	  For more information on KUnit and unit tests in general, please
 	  refer to the KUnit documentation in Documentation/dev-tools/kunit/.
 
+config DRM_AMD_COLOR_STEAMDECK
+	bool "Enable color calibration features for Steam Deck"
+	depends on DRM_AMD_DC
+	help
+	  Choose this option if you want to use AMDGPU features for broader
+	  color management support on Steam Deck.
+
 endmenu
