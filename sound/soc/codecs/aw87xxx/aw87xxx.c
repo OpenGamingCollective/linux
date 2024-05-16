@@ -1284,7 +1284,7 @@ static struct aw87xxx *aw87xxx_malloc_init(struct i2c_client *client)
 
 	mutex_init(&aw87xxx->reg_lock);
 
-	AW_DEV_LOGI(&client->dev, "struct aw87xxx devm_kzalloc and init down");
+	AW_DEV_LOGI(&client->dev, "Driver struct alloc and mutex init done, devinfo: i2c_bus=%u, i2c_addr=%x", client->adapter->nr, client->addr);
 	return aw87xxx;
 }
 
@@ -1324,29 +1324,38 @@ static int aw87xxx_i2c_probe(struct i2c_client *client)
 	}
 
 	gpiod = gpiod_get_optional(aw87xxx->dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(gpiod)){
-		AW_DEV_LOGE(aw87xxx->dev, "Get gpiod failed");
-		goto exit_device_init_failed;
-	}
-
-	aw87xxx->aw_dev.rst_gpio = desc_to_gpio(gpiod);
-        aw87xxx->aw_dev.hwen_status = AW_DEV_HWEN_OFF;
-        AW_DEV_LOGI(aw87xxx->dev, "reset gpio[%d] parse succeed", aw87xxx->aw_dev.rst_gpio);
-        if (gpio_is_valid(aw87xxx->aw_dev.rst_gpio)) {
-                ret = devm_gpio_request_one(aw87xxx->dev, aw87xxx->aw_dev.rst_gpio, GPIOF_OUT_INIT_LOW, "aw87xxx_reset");
-                if (ret < 0) {
-                        AW_DEV_LOGE(aw87xxx->dev, "reset request failed");
-                        goto exit_device_init_failed;
-                }
-        }
 */
 
-	/*Disabling RESET GPIO*/
-        AW_DEV_LOGI(aw87xxx->dev, "no reset gpio provided, hardware reset unavailable");
-        aw87xxx->aw_dev.rst_gpio = AW_NO_RESET_GPIO;
-        aw87xxx->aw_dev.hwen_status = AW_DEV_HWEN_INVALID;
+	if (g_aw87xxx_dev_cnt == 0){
+		gpiod = gpiod_get(aw87xxx->dev, NULL, GPIOD_OUT_LOW);
+		if (gpiod == NULL){
+	                AW_DEV_LOGE(aw87xxx->dev, "Gpiod returned NULL failing gracefully.");
+	                goto exit_device_init_failed;
+	        }
 
+		if (IS_ERR(gpiod)){
+			AW_DEV_LOGE(aw87xxx->dev, "Get gpiod failed.");
+			goto exit_device_init_failed;
+		}
 
+		aw87xxx->aw_dev.rst_gpio = desc_to_gpio(gpiod);
+	        aw87xxx->aw_dev.hwen_status = AW_DEV_HWEN_OFF;
+	        AW_DEV_LOGI(aw87xxx->dev, "reset gpio[%x] parse succeed", aw87xxx->aw_dev.rst_gpio);
+
+	        if (gpio_is_valid(aw87xxx->aw_dev.rst_gpio)) {
+	                ret = devm_gpio_request_one(aw87xxx->dev, aw87xxx->aw_dev.rst_gpio, GPIOF_OUT_INIT_LOW, "aw87xxx_reset");
+	                if ((ret < 0) && (ret != -EBUSY)) {
+	                        AW_DEV_LOGE(aw87xxx->dev, "reset request failed, returned [%d]", ret);
+	                        goto exit_device_init_failed;
+	                }
+	        }else{
+			/*Disabling RESET GPIO*/
+	        	AW_DEV_LOGI(aw87xxx->dev, "no reset gpio provided, hardware reset unavailable");
+	        	aw87xxx->aw_dev.rst_gpio = AW_NO_RESET_GPIO;
+        		aw87xxx->aw_dev.hwen_status = AW_DEV_HWEN_INVALID;
+		}
+
+	}
 	/*hw power on PA*/
 	aw87xxx_dev_hw_pwr_ctrl(&aw87xxx->aw_dev, true);
 

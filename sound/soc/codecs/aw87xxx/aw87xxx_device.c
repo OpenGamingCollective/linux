@@ -102,8 +102,8 @@ int aw87xxx_dev_i2c_write_byte(struct aw_device *aw_dev,
 	while (cnt < AW_I2C_RETRIES) {
 		ret = i2c_smbus_write_byte_data(aw_dev->i2c, reg_addr, reg_data);
 		if (ret < 0)
-			AW_DEV_LOGE(aw_dev->dev, "i2c_write cnt=%d error=%d",
-				cnt, ret);
+			AW_DEV_LOGE(aw_dev->dev, "i2c_write cnt=%d error=%d i2c_bus=%u i2c_addr=%X chipid=%X",
+				cnt, ret, aw_dev->i2c_bus, aw_dev->i2c_addr, aw_dev->chipid);
 		else
 			break;
 
@@ -123,8 +123,8 @@ int aw87xxx_dev_i2c_read_byte(struct aw_device *aw_dev,
 	while (cnt < AW_I2C_RETRIES) {
 		ret = i2c_smbus_read_byte_data(aw_dev->i2c, reg_addr);
 		if (ret < 0) {
-			AW_DEV_LOGE(aw_dev->dev, "i2c_read cnt=%d error=%d",
-				cnt, ret);
+			AW_DEV_LOGE(aw_dev->dev, "i2c_read cnt=%d error=%d i2c_bus=%u i2c_addr=%X chipid=%X",
+				cnt, ret, aw_dev->i2c_bus, aw_dev->i2c_addr, aw_dev->chipid);
 		} else {
 			*reg_data = ret;
 			break;
