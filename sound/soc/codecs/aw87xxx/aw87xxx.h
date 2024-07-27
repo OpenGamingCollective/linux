@@ -118,4 +118,9 @@ struct aw87xxx {
 int aw87xxx_update_profile(struct aw87xxx *aw87xxx, char *profile);
 int aw87xxx_update_profile_esd(struct aw87xxx *aw87xxx, char *profile);
 
+char *aw87xxx_show_current_profile(int dev_index);
+int aw87xxx_set_profile(int dev_index, char *profile);
+int aw87xxx_set_profile_by_id(int dev_index, int profile_id);
+int aw87xxx_add_codec_controls(void *codec);
+int aw87xxx_awrw_write(struct aw87xxx *aw87xxx, const char *buf, size_t count);
 #endif
