@@ -20,6 +20,10 @@
  *  Copyright (c) 2016 Frederik Wenigwieser <frederik.wenigwieser@gmail.com>
  */
 
+/*
+ */
+
+#include "linux/export.h"
 #include <linux/acpi.h>
 #include <linux/cleanup.h>
 #include <linux/dmi.h>
@@ -687,7 +691,7 @@ static int mcu_request_version(struct hid_device *hdev)
 	return ret;
 }
 
-static void validate_mcu_fw_version(struct hid_device *hdev, int idProduct)
+void validate_mcu_fw_version(struct hid_device *hdev, int idProduct)
 {
 	int min_version, version;
 
@@ -715,6 +719,7 @@ static void validate_mcu_fw_version(struct hid_device *hdev, int idProduct)
 		set_ally_mcu_powersave(true);
 	}
 }
+EXPORT_SYMBOL_NS(validate_mcu_fw_version, "HID_ASUS");
 
 static bool asus_has_report_id(struct hid_device *hdev, u16 report_id)
 {
@@ -734,8 +739,6 @@ static bool asus_has_report_id(struct hid_device *hdev, u16 report_id)
 static int asus_kbd_register_leds(struct hid_device *hdev)
 {
 	struct asus_drvdata *drvdata = hid_get_drvdata(hdev);
-	struct usb_interface *intf;
-	struct usb_device *udev;
 	unsigned char kbd_func;
 	int ret;
 
@@ -748,17 +751,19 @@ static int asus_kbd_register_leds(struct hid_device *hdev)
 	if (!(kbd_func & SUPPORT_KBD_BACKLIGHT))
 		return -ENODEV;
 
+	#if !IS_REACHABLE(CONFIG_HID_ASUS_ALLY)
+	if (drvdata->quirks & QUIRK_ROG_ALLY_XPAD) {
+		struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
+		struct usb_device *udev = interface_to_usbdev(intf);
+		validate_mcu_fw_version(hdev,
+			le16_to_cpu(udev->descriptor.idProduct));
+	}
+	#endif /* !IS_REACHABLE(CONFIG_HID_ASUS_ALLY) */
+
 	if (dmi_match(DMI_PRODUCT_FAMILY, "ProArt P16")) {
 		ret = asus_kbd_disable_oobe(hdev);
 		if (ret < 0)
 			return ret;
-	}
-
-	if (drvdata->quirks & QUIRK_ROG_ALLY_XPAD) {
-		intf = to_usb_interface(hdev->dev.parent);
-		udev = interface_to_usbdev(intf);
-		validate_mcu_fw_version(hdev,
-			le16_to_cpu(udev->descriptor.idProduct));
 	}
 
 	drvdata->kbd_backlight = devm_kzalloc(&hdev->dev,
