@@ -61,6 +61,14 @@
 #define HWMON_PWM_FAN_MODE_AUTO	0x02
 #define HWMON_PWM_FAN_MODE_EC_CURVE	0x03
 
+/* EC Temperature Sensors */
+#define AYN_SENSOR_BAT_TEMP_REG		0x04 /* Battery */
+#define AYN_SENSOR_CHARGE_TEMP_REG	0x07 /* Charger IC */
+#define AYN_SENSOR_MB_TEMP_REG		0x05 /* Motherboard */
+#define AYN_SENSOR_PROC_TEMP_REG	0x09 /* CPU Core */
+#define AYN_SENSOR_VCORE_TEMP_REG	0x08 /* vCore */
+
+
 /* Handle ACPI lock mechanism */
 #define ACPI_LOCK_DELAY_MS 500
 
@@ -81,8 +89,19 @@ struct ayn_device {
 	u32 ayn_lock; /* ACPI EC Lock */
 } drvdata;
 
-/* Handle ACPI lock mechanism */
-#define ACPI_LOCK_DELAY_MS 500
+struct thermal_sensor {
+	char *name;
+	int reg;
+};
+
+static struct thermal_sensor thermal_sensors[] = {
+	{ "Battery",		AYN_SENSOR_BAT_TEMP_REG },
+	{ "Motherboard",	AYN_SENSOR_MB_TEMP_REG },
+	{ "Charger IC",		AYN_SENSOR_CHARGE_TEMP_REG },
+	{ "vCore",		AYN_SENSOR_VCORE_TEMP_REG },
+	{ "CPU Core",		AYN_SENSOR_PROC_TEMP_REG },
+	{}
+};
 
 static bool lock_global_acpi_lock(void)
 {
@@ -428,6 +447,61 @@ static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point3_temp, pwm_curve, 7);
 static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point4_temp, pwm_curve, 8);
 static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point5_temp, pwm_curve, 9);
 
+/**
+ * thermal_sensor_show() - Read a thermal sensor attribute value.
+ *
+ * @dev: The attribute's parent device.
+ * @attr: The attribute to read.
+ * @buf: Buffer to write the result into.
+ *
+ * Return: Number of bytes read, or an error.
+ */
+static ssize_t thermal_sensor_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	long ret, val;
+	int i;
+
+	i = to_sensor_dev_attr(attr)->index;
+
+	ret = read_from_ec(thermal_sensors[i].reg, 1, &val);
+	if (ret)
+		return ret;
+
+	val = val * 1000L;
+
+	return sysfs_emit(buf, "%ld\n", val);
+}
+
+/**
+ * thermal_sensor_label_show() - Read a thermal sensor attribute label.
+ *
+ * @dev: The attribute's parent device.
+ * @attr: The attribute to read.
+ * @buf: Buffer to read to.
+ *
+ * Return: Number of bytes read, or an error.
+ */
+static ssize_t thermal_sensor_label_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	int i = to_sensor_dev_attr(attr)->index;
+
+	return sysfs_emit(buf, "%s\n", thermal_sensors[i].name);
+}
+
+static SENSOR_DEVICE_ATTR_RO(temp1_input, thermal_sensor, 0);
+static SENSOR_DEVICE_ATTR_RO(temp2_input, thermal_sensor, 1);
+static SENSOR_DEVICE_ATTR_RO(temp3_input, thermal_sensor, 2);
+static SENSOR_DEVICE_ATTR_RO(temp4_input, thermal_sensor, 3);
+static SENSOR_DEVICE_ATTR_RO(temp5_input, thermal_sensor, 4);
+static SENSOR_DEVICE_ATTR_RO(temp1_label, thermal_sensor_label, 0);
+static SENSOR_DEVICE_ATTR_RO(temp2_label, thermal_sensor_label, 1);
+static SENSOR_DEVICE_ATTR_RO(temp3_label, thermal_sensor_label, 2);
+static SENSOR_DEVICE_ATTR_RO(temp4_label, thermal_sensor_label, 3);
+static SENSOR_DEVICE_ATTR_RO(temp5_label, thermal_sensor_label, 4);
+
 static struct attribute *ayn_sensors_attrs[] = {
 	&sensor_dev_attr_pwm1_auto_point1_pwm.dev_attr.attr,
 	&sensor_dev_attr_pwm1_auto_point1_temp.dev_attr.attr,
@@ -439,6 +513,16 @@ static struct attribute *ayn_sensors_attrs[] = {
 	&sensor_dev_attr_pwm1_auto_point4_temp.dev_attr.attr,
 	&sensor_dev_attr_pwm1_auto_point5_pwm.dev_attr.attr,
 	&sensor_dev_attr_pwm1_auto_point5_temp.dev_attr.attr,
+	&sensor_dev_attr_temp1_input.dev_attr.attr,
+	&sensor_dev_attr_temp1_label.dev_attr.attr,
+	&sensor_dev_attr_temp2_input.dev_attr.attr,
+	&sensor_dev_attr_temp2_label.dev_attr.attr,
+	&sensor_dev_attr_temp3_input.dev_attr.attr,
+	&sensor_dev_attr_temp3_label.dev_attr.attr,
+	&sensor_dev_attr_temp4_input.dev_attr.attr,
+	&sensor_dev_attr_temp4_label.dev_attr.attr,
+	&sensor_dev_attr_temp5_input.dev_attr.attr,
+	&sensor_dev_attr_temp5_label.dev_attr.attr,
 	NULL,
 };
 
