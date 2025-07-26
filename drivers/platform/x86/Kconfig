@@ -330,6 +330,18 @@ config ASUS_TF103C_DOCK
 	  If you have an Asus TF103C tablet say Y or M here, for a generic x86
 	  distro config say M here.
 
+config AYN_EC
+	tristate "AYN x86 devices EC platform control"
+	depends on ACPI
+	depends on HWMON
+	help
+	  This is a driver for AYN and Tectoy x86 handheld devices. It provides
+	  temperature monitoring, manual fan speed control, fan curve control,
+	  and chassis RGB settings.
+
+	  If you have an x86 AYN or Tectoy handheld device say M here. The module
+	  will be called ayn-platform.
+
 config AYANEO_EC
 	tristate "Ayaneo EC platform control"
 	depends on DMI
