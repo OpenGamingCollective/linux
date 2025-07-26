@@ -334,6 +334,9 @@ config AYN_EC
 	tristate "AYN x86 devices EC platform control"
 	depends on ACPI
 	depends on HWMON
+	depends on NEW_LEDS
+	select LEDS_CLASS
+	select LEDS_CLASS_MULTICOLOR
 	help
 	  This is a driver for AYN and Tectoy x86 handheld devices. It provides
 	  temperature monitoring, manual fan speed control, fan curve control,
