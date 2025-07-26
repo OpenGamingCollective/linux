@@ -4377,6 +4377,7 @@ AYN PLATFORM EC DRIVER
 M:	Derek J. Clark <derekjohn.clark@gmail.com>
 L:	platform-driver-x86@vger.kernel.org
 S:	Maintained
+F:	Documentation/ABI/testing/sysfs-platform-ayn-ec
 F:	drivers/platform/x86/ayn-ec.c
 
 AYANEO PLATFORM EC DRIVER
