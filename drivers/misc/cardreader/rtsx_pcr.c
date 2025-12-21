@@ -1761,7 +1761,7 @@ static int rtsx_pci_runtime_idle(struct device *device)
 
 	mutex_unlock(&pcr->pcr_mutex);
 
-	if (pcr->rtd3_en)
+	if (pcr->rtd3_en && PCI_PID(pcr) != PID_525A)
 		pm_schedule_suspend(device, 10000);
 
 	return -EBUSY;
