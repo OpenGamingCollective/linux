@@ -1,0 +1,89 @@
+name: Generate OGC Kernel Patch Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ogc_tag:
+        description: "Enter a tagged OGC kernel version in the format OGC/<kernel-version>"
+        required: true
+        type: string
+
+jobs:
+  generate-patch-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract tag names
+        id: tag
+        run: |
+          OGC_TAG="${{ github.event.inputs.ogc_tag }}"
+
+          if [[ "$OGC_TAG" != OGC/* ]]; then
+            echo "::error::Invalid tag '$OGC_TAG'. Expected format 'OGC/<kernel-version>' (example: OGC/v6.6.123)."
+            exit 1
+          fi
+
+          UPSTREAM_TAG="${OGC_TAG#OGC/}"
+
+          echo "ogc_tag=${OGC_TAG}" >> $GITHUB_OUTPUT
+          echo "upstream_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Checkout our repository at tag
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.tag.outputs.ogc_tag }}
+
+      - name: Add kernel remote
+        run: |
+          git remote add upstream https://github.com/gregkh/linux.git
+          git fetch --depth=1 upstream "refs/tags/${{ steps.tag.outputs.upstream_tag }}:refs/tags/${{ steps.tag.outputs.upstream_tag }}"
+
+      - name: Import signing key
+        run: |
+          echo "${{ secrets.SIGNING_PRIVATE_KEY }}" | gpg --batch --import
+          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
+
+      - name: Generate and sign patches
+        run: |
+          # Monolithic Patch
+          git diff "refs/tags/${{ steps.tag.outputs.upstream_tag }}" \
+                   "${{ steps.tag.outputs.ogc_tag }}" > monolithic.patch
+
+          gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "${{ secrets.SIGNING_PASSPHRASE }}" \
+              --output monolithic.patch.sig \
+              --detach-sign monolithic.patch
+
+          # Patch Series
+          mkdir -p series
+          git format-patch \
+           "refs/tags/${{ steps.tag.outputs.upstream_tag }}..refs/tags/${{ steps.tag.outputs.ogc_tag }}" \
+            -o series
+
+          for PATCH in series/*.patch; do
+            gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "${{ secrets.SIGNING_PASSPHRASE }}" \
+                --output "${PATCH}.sig" \
+                --detach-sign "${PATCH}"
+          done
+
+          zip -r series.zip series
+
+      - name: Write public key
+        run: |
+          echo "${{ secrets.SIGNING_PUBLIC_KEY }}" > public.key
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2.5.0
+        with:
+          tag_name: ${{ steps.tag.outputs.ogc_tag }}
+          name: "OGC Kernel Patch Release – ${{
+            steps.tag.outputs.ogc_tag }}"
+          files: |
+            monolithic.patch
+            monolithic.patch.sig
+            series.zip
+            public.key
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
