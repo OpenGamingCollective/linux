@@ -19,7 +19,7 @@ jobs:
           OGC_TAG="${{ github.event.inputs.ogc_tag }}"
 
           if [[ "$OGC_TAG" != OGC/* ]]; then
-            echo "::error::Invalid tag '$OGC_TAG'. Expected format 'OGC/<kernel-version>' (example: OGC/v6.18.9)."
+            echo "::error::Invalid tag '$OGC_TAG'. Expected format 'OGC/<kernel-version>' (example: OGC/v6.6.123)."
             exit 1
           fi
 
