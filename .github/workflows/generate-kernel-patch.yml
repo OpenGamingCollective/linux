@@ -72,7 +72,7 @@ jobs:
 
       - name: Write public key
         run: |
-          echo "${{ secrets.SIGNING_PUBLIC_KEY }}" > public.key
+          echo "${{ vars.SIGNING_PUBLIC_KEY }}" > public.key
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2.5.0
