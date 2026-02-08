@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ogc_tag:
-        description: "Enter a tagged OGC kernel version in the format OGC/<kernel-version>"
+        description: "Enter a tagged OGC kernel version in the format <kernel-version>-OGC<rev>"
         required: true
         type: string
 
@@ -18,15 +18,17 @@ jobs:
         run: |
           OGC_TAG="${{ github.event.inputs.ogc_tag }}"
 
-          if [[ "$OGC_TAG" != OGC/* ]]; then
-            echo "::error::Invalid tag '$OGC_TAG'. Expected format 'OGC/<kernel-version>' (example: OGC/v6.6.123)."
+          # Expected format: v<kernel-version>-OGC<rev>
+          # Example: v6.6.123-OGC1
+          if [[ ! "$OGC_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-OGC[0-9]+$ ]]; then
+            echo "::error::Invalid tag '$OGC_TAG'. Expected format 'v<kernel-version>-OGC<rev>' (example: v6.6.123-OGC1)."
             exit 1
           fi
 
-          UPSTREAM_TAG="${OGC_TAG#OGC/}"
+          UPSTREAM_TAG="${OGC_TAG%-OGC*}"
 
-          echo "ogc_tag=${OGC_TAG}" >> $GITHUB_OUTPUT
-          echo "upstream_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+          echo "ogc_tag=$OGC_TAG" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout our repository at tag
         uses: actions/checkout@v6.0.2
