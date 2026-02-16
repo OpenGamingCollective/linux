@@ -74,6 +74,7 @@
 #include <media/cec-notifier.h>
 
 #include "modules/inc/mod_freesync.h"
+#include "modules/inc/mod_info_packet.h"
 #include "modules/inc/mod_power.h"
 
 #include "amdgpu_dm_trace.h"
@@ -3853,10 +3854,21 @@ STATIC_IFN_KUNIT int parse_hdmi_amd_vsdb(struct amdgpu_dm_connector *aconnector,
 }
 EXPORT_IF_KUNIT(parse_hdmi_amd_vsdb);
 
-static void monitor_range_from_hdmi(struct drm_display_info *display)
+static void monitor_range_from_hdmi(struct drm_display_info *display,
+				    const struct amdgpu_hdmi_vsdb_info *vsdb)
 {
+	u16 vrr_max = display->hdmi.vrr_cap.vrr_max;
+
+	/* Try getting upper vrr bound from AMD vsdb */
+	if (vrr_max == 0)
+		vrr_max = vsdb->max_refresh_rate_hz;
+
+	/* Use max possible BRR value as a last resort */
+	if (vrr_max == 0)
+		vrr_max = VTEM_BRR_MAX;
+
 	display->monitor_range.min_vfreq = display->hdmi.vrr_cap.vrr_min;
-	display->monitor_range.max_vfreq = display->hdmi.vrr_cap.vrr_max;
+	display->monitor_range.max_vfreq = vrr_max;
 }
 
 /**
@@ -4031,8 +4043,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 
 		i = parse_hdmi_amd_vsdb(amdgpu_dm_connector, edid, &vsdb_info);
 		/* Prefer HDMI VRR */
-		if (hdmi_vrr->supported && hdmi_vrr->vrr_max > 0) {
-			monitor_range_from_hdmi(&connector->display_info);
+		if (hdmi_vrr->supported) {
+			monitor_range_from_hdmi(&connector->display_info, &vsdb_info);
 			memset(&amdgpu_dm_connector->vsdb_info, 0,
 			       sizeof(amdgpu_dm_connector->vsdb_info));
 			sink->edid_caps.freesync_vcp_code = 0;
