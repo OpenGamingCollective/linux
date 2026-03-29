@@ -1306,6 +1306,8 @@ struct replay_settings {
 	uint32_t replay_desync_error_fail_count;
 	/* The frame skip number dal send to DMUB */
 	uint16_t frame_skip_number;
+	/* Timestamp of when replay was last disabled, for re-enable delay */
+	unsigned long long replay_disabled_timestamp_ns;
 	/* Current Panel Replay events */
 	uint32_t replay_events;
 };
