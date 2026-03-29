@@ -133,6 +133,15 @@ void amdgpu_dm_crtc_set_static_screen_optimze(
 	if (sso_enable && !allow_sr_entry)
 		return;
 
+	/*
+	 * Mirror the commit path's 500ms Replay re-enable guard without
+	 * blocking requests to exit self-refresh.
+	 */
+	if (sso_enable && link->replay_settings.replay_feature_enabled &&
+	    (ktime_get_ns() - link->replay_settings.replay_disabled_timestamp_ns)
+		    <= 500000000)
+		return;
+
 	amdgpu_dm_replay_set_event(dm, stream,
 		set_vsync_event, replay_event_vsync, set_vsync_event);
 
