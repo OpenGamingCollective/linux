@@ -3187,6 +3187,16 @@ static void fill_dc_dirty_rects(struct drm_plane *plane,
 	if (new_plane_state->rotation != DRM_MODE_ROTATE_0)
 		goto ffu;
 
+	/*
+	 * Force full-frame updates for Replay on DCN 3.14 (Phoenix/Hawk Point).
+	 * The DMCUB firmware on this generation produces visual artifacts when
+	 * processing selective updates within Panel Replay. Sending a single
+	 * full-screen dirty rect avoids the buggy SU code path in firmware.
+	 */
+	if (dm_crtc_state->stream->link->replay_settings.replay_feature_enabled &&
+	    dm_crtc_state->stream->ctx->dce_version == DCN_VERSION_3_14)
+		goto ffu;
+
 	if (!new_plane_state->ignore_damage_clips) {
 		num_clips = drm_plane_get_damage_clips_count(new_plane_state);
 		clips = drm_plane_get_damage_clips(new_plane_state);
