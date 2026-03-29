@@ -3742,8 +3742,9 @@ static void amdgpu_dm_enable_self_refresh(struct amdgpu_display_manager *dm,
 			amdgpu_dm_psr_set_event(dm, acrtc_state->stream, false,
 				psr_event_hw_programming, false);
 
-			amdgpu_dm_replay_set_event(dm, acrtc_state->stream, false,
-				replay_event_hw_programming, false);
+			if ((current_ts - pr->replay_disabled_timestamp_ns) > 500000000)
+				amdgpu_dm_replay_set_event(dm, acrtc_state->stream, false,
+					replay_event_hw_programming, false);
 		}
 	} else {
 		acrtc_attach->dm_irq_params.allow_sr_entry = false;
@@ -4158,6 +4159,18 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 			spin_unlock_irqrestore(&pcrtc->dev->event_lock, flags);
 		}
 		mutex_lock(&dm->dc_lock);
+		if (((acrtc_state->update_type > UPDATE_TYPE_FAST) || vrr_active) &&
+		    acrtc_state->stream->link->replay_settings.replay_allow_active) {
+			amdgpu_dm_replay_set_event(dm, acrtc_state->stream, true,
+				replay_event_hw_programming, true);
+			/*
+			 * Record when replay was disabled so the 500ms
+			 * re-enable guard in amdgpu_dm_enable_self_refresh()
+			 * and vblank_control_worker works correctly.
+			 */
+			acrtc_state->stream->link->replay_settings.replay_disabled_timestamp_ns =
+				ktime_get_ns();
+		}
 		/*
 		 * Tearing (immediate) flips cannot work with panel self-refresh
 		 * features. The event is cleared by
@@ -4195,7 +4208,7 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 			dm_update_pflip_irq_state(drm_to_adev(dev),
 						  acrtc_attach);
 		amdgpu_dm_enable_self_refresh(dm, acrtc_attach, acrtc_state,
-					      timestamp_ns);
+					      ktime_get_ns());
 		mutex_unlock(&dm->dc_lock);
 	}
 
