@@ -3704,6 +3704,15 @@ static void amdgpu_dm_enable_self_refresh(struct amdgpu_display_manager *dm,
 	struct amdgpu_dm_connector *aconn =
 		(struct amdgpu_dm_connector *)acrtc_state->stream->dm_stream_context;
 
+	if (acrtc_state->update_type > UPDATE_TYPE_FAST) {
+		/*
+		 * Reset skip count after non-fast updates to prevent
+		 * self-refresh from being re-enabled too soon during
+		 * ongoing animations (e.g., workspace switch).
+		 */
+		aconn->sr_skip_count = AMDGPU_DM_PSR_ENTRY_DELAY;
+	}
+
 	if (!acrtc_state->base.async_flip) {
 		amdgpu_dm_psr_set_event(dm, acrtc_state->stream, false,
 			psr_event_immediate_flip, false);
