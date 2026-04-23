@@ -1329,6 +1329,63 @@ void hwss_execute_sequence(struct dc *dc,
 		case PHANTOM_HUBP_POST_ENABLE:
 			hwss_phantom_hubp_post_enable(params);
 			break;
+		case STREAM_ENC_UPDATE_HDMI_INFO_PACKETS:
+			hwss_stream_enc_update_hdmi_info_packets(params);
+			break;
+		case HPO_FRL_STREAM_ENC_UPDATE_HDMI_INFO_PACKETS:
+			hwss_hpo_frl_stream_enc_update_hdmi_info_packets(params);
+			break;
+		case HPO_DP_STREAM_ENC_UPDATE_DP_INFO_PACKETS_SDP_LINE_NUM:
+			hwss_hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num(params);
+			break;
+		case HPO_DP_STREAM_ENC_UPDATE_DP_INFO_PACKETS:
+			hwss_hpo_dp_stream_enc_update_dp_info_packets(params);
+			break;
+		case STREAM_ENC_UPDATE_DP_INFO_PACKETS_SDP_LINE_NUM:
+			hwss_stream_enc_update_dp_info_packets_sdp_line_num(params);
+			break;
+		case STREAM_ENC_UPDATE_DP_INFO_PACKETS:
+			hwss_stream_enc_update_dp_info_packets(params);
+			break;
+		case DSC_SET_CONFIG_SIMPLE:
+			hwss_dsc_set_config_simple(params);
+			break;
+		case STREAM_ENC_DP_SET_DSC_CONFIG:
+			hwss_stream_enc_dp_set_dsc_config(params);
+			break;
+		case HPO_DP_STREAM_ENC_DP_SET_DSC_PPS_INFO_PACKET:
+			hwss_hpo_dp_stream_enc_dp_set_dsc_pps_info_packet(params);
+			break;
+		case STREAM_ENC_DP_SET_DSC_PPS_INFO_PACKET:
+			hwss_stream_enc_dp_set_dsc_pps_info_packet(params);
+			break;
+		case HPO_FRL_STREAM_ENC_SET_DSC_CONFIG:
+			hwss_hpo_frl_stream_enc_set_dsc_config(params);
+			break;
+		case DP_TRACE_SOURCE_SEQUENCE:
+			hwss_dp_trace_source_sequence(params);
+			break;
+		case LINK_INCREASE_MST_PAYLOAD:
+			hwss_link_increase_mst_payload(params);
+			break;
+		case LINK_REDUCE_MST_PAYLOAD:
+			hwss_link_reduce_mst_payload(params);
+			break;
+		case DP_SET_TEST_PATTERN:
+			hwss_dp_set_test_pattern(params);
+			break;
+		case LINK_SET_DPMS_OFF:
+			hwss_link_set_dpms_off(params);
+			break;
+		case DISABLE_AUDIO_STREAM:
+			hwss_disable_audio_stream(dc, params);
+			break;
+		case PREPARE_BANDWIDTH:
+			hwss_prepare_bandwidth(dc, params);
+			break;
+		case LINK_SET_DPMS_ON:
+			hwss_link_set_dpms_on(params);
+			break;
 		default:
 			ASSERT(false);
 			break;
@@ -3167,6 +3224,217 @@ void hwss_phantom_hubp_post_enable(union block_sequence_params *params)
 
 	if (hubp && hubp->funcs->phantom_hubp_post_enable)
 		hubp->funcs->phantom_hubp_post_enable(hubp);
+}
+
+void hwss_stream_enc_update_hdmi_info_packets(union block_sequence_params *params)
+{
+	if (params->stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.stream_enc &&
+	    params->stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.stream_enc->funcs->update_hdmi_info_packets)
+		params->stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.stream_enc->funcs->update_hdmi_info_packets(
+			params->stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.stream_enc,
+			&params->stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.encoder_info_frame);
+}
+
+void hwss_hpo_frl_stream_enc_update_hdmi_info_packets(union block_sequence_params *params)
+{
+	if (params->hpo_frl_stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.hpo_frl_stream_enc &&
+	    params->hpo_frl_stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.hpo_frl_stream_enc->funcs->update_hdmi_info_packets)
+		params->hpo_frl_stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.hpo_frl_stream_enc->funcs->update_hdmi_info_packets(
+			params->hpo_frl_stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.hpo_frl_stream_enc,
+			&params->hpo_frl_stream_enc_update_hdmi_info_packets_params.pipe_ctx->stream_res.encoder_info_frame);
+}
+
+void hwss_hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num(union block_sequence_params *params)
+{
+	if (params->hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.hpo_dp_stream_enc &&
+	    params->hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->update_dp_info_packets_sdp_line_num)
+		params->hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->update_dp_info_packets_sdp_line_num(
+			params->hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.hpo_dp_stream_enc,
+			&params->hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.encoder_info_frame);
+}
+
+void hwss_hpo_dp_stream_enc_update_dp_info_packets(union block_sequence_params *params)
+{
+	if (params->hpo_dp_stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.hpo_dp_stream_enc &&
+	    params->hpo_dp_stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->update_dp_info_packets)
+		params->hpo_dp_stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->update_dp_info_packets(
+			params->hpo_dp_stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.hpo_dp_stream_enc,
+			&params->hpo_dp_stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.encoder_info_frame);
+}
+
+void hwss_stream_enc_update_dp_info_packets_sdp_line_num(union block_sequence_params *params)
+{
+	if (params->stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.stream_enc &&
+	    params->stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.stream_enc->funcs->update_dp_info_packets_sdp_line_num)
+		params->stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.stream_enc->funcs->update_dp_info_packets_sdp_line_num(
+			params->stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.stream_enc,
+			&params->stream_enc_update_dp_info_packets_sdp_line_num_params.pipe_ctx->stream_res.encoder_info_frame);
+}
+
+void hwss_stream_enc_update_dp_info_packets(union block_sequence_params *params)
+{
+	if (params->stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.stream_enc &&
+	    params->stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.stream_enc->funcs->update_dp_info_packets)
+		params->stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.stream_enc->funcs->update_dp_info_packets(
+			params->stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.stream_enc,
+			&params->stream_enc_update_dp_info_packets_params.pipe_ctx->stream_res.encoder_info_frame);
+}
+
+void hwss_stream_enc_dp_set_dsc_config(union block_sequence_params *params)
+{
+	if (params->stream_enc_dp_set_dsc_config_params.stream_enc &&
+	    params->stream_enc_dp_set_dsc_config_params.stream_enc->funcs->dp_set_dsc_config) {
+		enum optc_dsc_mode dsc_mode = OPTC_DSC_DISABLED;
+		uint32_t dsc_bytes_per_pixel = 0;
+		uint32_t dsc_slice_width = 0;
+		const struct dsc_optc_config *dsc_optc_cfg = params->stream_enc_dp_set_dsc_config_params.dsc_optc_cfg;
+
+		if (dsc_optc_cfg) {
+			dsc_mode = dsc_optc_cfg->is_pixel_format_444 ?
+				OPTC_DSC_ENABLED_444 : OPTC_DSC_ENABLED_NATIVE_SUBSAMPLED;
+			dsc_bytes_per_pixel = dsc_optc_cfg->bytes_per_pixel;
+			dsc_slice_width = dsc_optc_cfg->slice_width;
+		}
+
+		params->stream_enc_dp_set_dsc_config_params.stream_enc->funcs->dp_set_dsc_config(
+			params->stream_enc_dp_set_dsc_config_params.stream_enc,
+			dsc_mode, dsc_bytes_per_pixel, dsc_slice_width);
+	}
+}
+
+void hwss_hpo_dp_stream_enc_dp_set_dsc_pps_info_packet(union block_sequence_params *params)
+{
+	if (params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.hpo_dp_stream_enc &&
+	    params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.hpo_dp_stream_enc->funcs->dp_set_dsc_pps_info_packet)
+		params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.hpo_dp_stream_enc->funcs->dp_set_dsc_pps_info_packet(
+			params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.hpo_dp_stream_enc,
+			params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.immediate_update,
+			params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.dsc_packed_pps,
+			params->hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params.pps_sdp_stream);
+}
+
+void hwss_stream_enc_dp_set_dsc_pps_info_packet(union block_sequence_params *params)
+{
+	if (params->stream_enc_dp_set_dsc_pps_info_packet_params.stream_enc &&
+	    params->stream_enc_dp_set_dsc_pps_info_packet_params.stream_enc->funcs->dp_set_dsc_pps_info_packet)
+		params->stream_enc_dp_set_dsc_pps_info_packet_params.stream_enc->funcs->dp_set_dsc_pps_info_packet(
+			params->stream_enc_dp_set_dsc_pps_info_packet_params.stream_enc,
+			params->stream_enc_dp_set_dsc_pps_info_packet_params.immediate_update,
+			params->stream_enc_dp_set_dsc_pps_info_packet_params.dsc_packed_pps,
+			params->stream_enc_dp_set_dsc_pps_info_packet_params.pps_sdp_stream);
+}
+
+void hwss_hpo_frl_stream_enc_set_dsc_config(union block_sequence_params *params)
+{
+	if (params->hpo_frl_stream_enc_set_dsc_config_params.hpo_frl_stream_enc &&
+	    params->hpo_frl_stream_enc_set_dsc_config_params.hpo_frl_stream_enc->funcs->hdmi_frl_set_dsc_config)
+		params->hpo_frl_stream_enc_set_dsc_config_params.hpo_frl_stream_enc->funcs->hdmi_frl_set_dsc_config(
+			params->hpo_frl_stream_enc_set_dsc_config_params.hpo_frl_stream_enc,
+			(struct dc_crtc_timing *)params->hpo_frl_stream_enc_set_dsc_config_params.timing,
+			params->hpo_frl_stream_enc_set_dsc_config_params.dsc_packed_pps);
+}
+
+void hwss_set_dmdata_attributes(union block_sequence_params *params)
+{
+	struct hubp *hubp = params->set_dmdata_attributes_params.hubp;
+
+	if (!hubp || !hubp->funcs->dmdata_set_attributes)
+		return;
+
+	hubp->funcs->dmdata_set_attributes(hubp,
+		&params->set_dmdata_attributes_params.attr);
+}
+
+void hwss_dp_trace_source_sequence(union block_sequence_params *params)
+{
+	struct dc_link *link = params->dp_trace_source_sequence_params.link;
+	enum dpcd_source_sequence source = params->dp_trace_source_sequence_params.source;
+
+	if (link && link->dc && link->dc->link_srv && link->dc->link_srv->dp_trace_source_sequence)
+		link->dc->link_srv->dp_trace_source_sequence(link, source);
+}
+
+void hwss_link_increase_mst_payload(union block_sequence_params *params)
+{
+	struct pipe_ctx *pipe_ctx = params->link_increase_mst_payload_params.pipe_ctx;
+	uint32_t mst_stream_bw = params->link_increase_mst_payload_params.mst_stream_bw;
+
+	if (pipe_ctx && pipe_ctx->stream && pipe_ctx->stream->link &&
+		pipe_ctx->stream->link->dc && pipe_ctx->stream->link->dc->link_srv &&
+		pipe_ctx->stream->link->dc->link_srv->increase_mst_payload)
+		pipe_ctx->stream->link->dc->link_srv->increase_mst_payload(pipe_ctx, mst_stream_bw);
+}
+
+void hwss_link_reduce_mst_payload(union block_sequence_params *params)
+{
+	struct pipe_ctx *pipe_ctx = params->link_reduce_mst_payload_params.pipe_ctx;
+	uint32_t mst_stream_bw = params->link_reduce_mst_payload_params.mst_stream_bw;
+
+	if (pipe_ctx && pipe_ctx->stream && pipe_ctx->stream->link &&
+		pipe_ctx->stream->link->dc && pipe_ctx->stream->link->dc->link_srv &&
+		pipe_ctx->stream->link->dc->link_srv->reduce_mst_payload)
+		pipe_ctx->stream->link->dc->link_srv->reduce_mst_payload(pipe_ctx, mst_stream_bw);
+}
+
+void hwss_dp_set_test_pattern(union block_sequence_params *params)
+{
+	struct dc_link *link = params->dp_set_test_pattern_params.link;
+	enum dp_test_pattern test_pattern = params->dp_set_test_pattern_params.test_pattern;
+	enum dp_test_pattern_color_space test_pattern_color_space =
+	params->dp_set_test_pattern_params.test_pattern_color_space;
+	const struct link_training_settings *p_link_settings =
+	params->dp_set_test_pattern_params.p_link_settings;
+	const unsigned char *p_custom_pattern = params->dp_set_test_pattern_params.p_custom_pattern;
+	unsigned int cust_pattern_size = params->dp_set_test_pattern_params.cust_pattern_size;
+
+	if (link && link->dc && link->dc->link_srv && link->dc->link_srv->dp_set_test_pattern)
+		link->dc->link_srv->dp_set_test_pattern(link, test_pattern, test_pattern_color_space,
+			p_link_settings, p_custom_pattern, cust_pattern_size);
+}
+
+void hwss_link_set_dpms_off(union block_sequence_params *params)
+{
+	struct pipe_ctx *pipe_ctx = params->link_set_dpms_off_params.pipe_ctx;
+
+	if (pipe_ctx && pipe_ctx->stream && pipe_ctx->stream->link &&
+	    pipe_ctx->stream->link->dc && pipe_ctx->stream->link->dc->link_srv &&
+	    pipe_ctx->stream->link->dc->link_srv->set_dpms_off)
+		pipe_ctx->stream->link->dc->link_srv->set_dpms_off(pipe_ctx);
+}
+
+void hwss_disable_audio_stream(struct dc *dc, union block_sequence_params *params)
+{
+	if (dc->hwss.disable_audio_stream)
+		dc->hwss.disable_audio_stream(
+			params->disable_audio_stream_params.pipe_ctx);
+}
+
+void hwss_prepare_bandwidth(struct dc *dc, union block_sequence_params *params)
+{
+	if (dc && dc->hwss.prepare_bandwidth)
+		dc->hwss.prepare_bandwidth(dc,
+			params->prepare_bandwidth_params.context);
+}
+
+void hwss_link_set_dpms_on(union block_sequence_params *params)
+{
+	struct dc_state *state = params->link_set_dpms_on_params.state;
+	struct pipe_ctx *pipe_ctx = params->link_set_dpms_on_params.pipe_ctx;
+
+	if (pipe_ctx && pipe_ctx->stream && pipe_ctx->stream->link &&
+	    pipe_ctx->stream->link->dc && pipe_ctx->stream->link->dc->link_srv &&
+	    pipe_ctx->stream->link->dc->link_srv->set_dpms_on)
+		pipe_ctx->stream->link->dc->link_srv->set_dpms_on(state, pipe_ctx);
+}
+
+void hwss_dsc_set_config_simple(union block_sequence_params *params)
+{
+	struct display_stream_compressor *dsc = params->dsc_set_config_simple_params.dsc;
+	struct dsc_config *dsc_cfg = &params->dsc_set_config_simple_params.dsc_cfg;
+	struct dsc_optc_config *dsc_optc_cfg = &params->dsc_set_config_simple_params.dsc_optc_cfg;
+
+	if (dsc && dsc->funcs && dsc->funcs->dsc_set_config)
+		dsc->funcs->dsc_set_config(dsc, dsc_cfg, dsc_optc_cfg);
 }
 
 void hwss_add_dccg_set_dto_dscclk(struct block_sequence_state *seq_state,
