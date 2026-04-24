@@ -739,6 +739,123 @@ struct phantom_hubp_post_enable_params {
 	struct hubp *hubp;
 };
 
+struct begin_cursor_offload_update_params {
+	struct dc *dc;
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct update_cursor_offload_pipe_params {
+	struct dc *dc;
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct commit_cursor_offload_update_params {
+	struct dc *dc;
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct stream_enc_update_hdmi_info_packets_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct hpo_frl_stream_enc_update_hdmi_info_packets_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct hpo_dp_stream_enc_update_dp_info_packets_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct stream_enc_update_dp_info_packets_sdp_line_num_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct stream_enc_update_dp_info_packets_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct dsc_set_config_simple_params {
+	struct display_stream_compressor *dsc;
+	struct dsc_config dsc_cfg;
+	struct dsc_optc_config dsc_optc_cfg;
+};
+
+struct stream_enc_dp_set_dsc_config_params {
+	struct stream_encoder *stream_enc;
+	const struct dsc_optc_config *dsc_optc_cfg;
+};
+
+struct hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params {
+	struct hpo_dp_stream_encoder *hpo_dp_stream_enc;
+	bool immediate_update;
+	uint8_t *dsc_packed_pps;
+	bool pps_sdp_stream;
+};
+
+struct stream_enc_dp_set_dsc_pps_info_packet_params {
+	struct stream_encoder *stream_enc;
+	bool immediate_update;
+	uint8_t *dsc_packed_pps;
+	bool pps_sdp_stream;
+};
+
+struct hpo_frl_stream_enc_set_dsc_config_params {
+	struct hpo_frl_stream_encoder *hpo_frl_stream_enc;
+	const struct dc_crtc_timing *timing;
+	uint8_t *dsc_packed_pps;
+};
+
+struct dp_trace_source_sequence_params {
+	struct dc_link *link;
+	enum dpcd_source_sequence source;
+};
+
+struct set_dmdata_attributes_params {
+	struct hubp *hubp;
+	struct dc_dmdata_attributes attr;
+};
+
+struct link_increase_mst_payload_params {
+	struct pipe_ctx *pipe_ctx;
+	uint32_t mst_stream_bw;
+};
+
+struct link_reduce_mst_payload_params {
+	struct pipe_ctx *pipe_ctx;
+	uint32_t mst_stream_bw;
+};
+
+struct dp_set_test_pattern_params {
+	struct dc_link *link;
+	enum dp_test_pattern test_pattern;
+	enum dp_test_pattern_color_space test_pattern_color_space;
+	const struct link_training_settings *p_link_settings;
+	const unsigned char *p_custom_pattern;
+	unsigned int cust_pattern_size;
+};
+
+struct link_set_dpms_off_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct disable_audio_stream_params {
+	struct pipe_ctx *pipe_ctx;
+};
+
+struct prepare_bandwidth_params {
+	struct dc *dc;
+	struct dc_state *context;
+};
+
+struct link_set_dpms_on_params {
+	struct dc_state *state;
+	struct pipe_ctx *pipe_ctx;
+};
+
 union block_sequence_params {
 	struct update_plane_addr_params update_plane_addr_params;
 	struct subvp_pipe_control_lock_fast_params subvp_pipe_control_lock_fast_params;
@@ -861,6 +978,29 @@ union block_sequence_params {
 	struct program_output_csc_params program_output_csc_params;
 	struct hubp_set_blank_params hubp_set_blank_params;
 	struct phantom_hubp_post_enable_params phantom_hubp_post_enable_params;
+	struct begin_cursor_offload_update_params begin_cursor_offload_update_params;
+	struct update_cursor_offload_pipe_params update_cursor_offload_pipe_params;
+	struct commit_cursor_offload_update_params commit_cursor_offload_update_params;
+	struct stream_enc_update_hdmi_info_packets_params stream_enc_update_hdmi_info_packets_params;
+	struct hpo_frl_stream_enc_update_hdmi_info_packets_params hpo_frl_stream_enc_update_hdmi_info_packets_params;
+	struct hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num_params;
+	struct hpo_dp_stream_enc_update_dp_info_packets_params hpo_dp_stream_enc_update_dp_info_packets_params;
+	struct stream_enc_update_dp_info_packets_sdp_line_num_params stream_enc_update_dp_info_packets_sdp_line_num_params;
+	struct stream_enc_update_dp_info_packets_params stream_enc_update_dp_info_packets_params;
+	struct dsc_set_config_simple_params dsc_set_config_simple_params;
+	struct stream_enc_dp_set_dsc_config_params stream_enc_dp_set_dsc_config_params;
+	struct hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params hpo_dp_stream_enc_dp_set_dsc_pps_info_packet_params;
+	struct stream_enc_dp_set_dsc_pps_info_packet_params stream_enc_dp_set_dsc_pps_info_packet_params;
+	struct hpo_frl_stream_enc_set_dsc_config_params hpo_frl_stream_enc_set_dsc_config_params;
+	struct dp_trace_source_sequence_params dp_trace_source_sequence_params;
+	struct set_dmdata_attributes_params set_dmdata_attributes_params;
+	struct link_increase_mst_payload_params link_increase_mst_payload_params;
+	struct link_reduce_mst_payload_params link_reduce_mst_payload_params;
+	struct dp_set_test_pattern_params dp_set_test_pattern_params;
+	struct link_set_dpms_off_params link_set_dpms_off_params;
+	struct disable_audio_stream_params disable_audio_stream_params;
+	struct prepare_bandwidth_params prepare_bandwidth_params;
+	struct link_set_dpms_on_params link_set_dpms_on_params;
 };
 
 enum block_sequence_func {
@@ -982,6 +1122,25 @@ enum block_sequence_func {
 	HUBP_SET_LEGACY_TILING_COMPAT_LEVEL,
 	HUBP_SET_BLANK,
 	PHANTOM_HUBP_POST_ENABLE,
+	STREAM_ENC_UPDATE_HDMI_INFO_PACKETS,
+	HPO_FRL_STREAM_ENC_UPDATE_HDMI_INFO_PACKETS,
+	HPO_DP_STREAM_ENC_UPDATE_DP_INFO_PACKETS_SDP_LINE_NUM,
+	HPO_DP_STREAM_ENC_UPDATE_DP_INFO_PACKETS,
+	STREAM_ENC_UPDATE_DP_INFO_PACKETS_SDP_LINE_NUM,
+	STREAM_ENC_UPDATE_DP_INFO_PACKETS,
+	DSC_SET_CONFIG_SIMPLE,
+	STREAM_ENC_DP_SET_DSC_CONFIG,
+	HPO_DP_STREAM_ENC_DP_SET_DSC_PPS_INFO_PACKET,
+	STREAM_ENC_DP_SET_DSC_PPS_INFO_PACKET,
+	HPO_FRL_STREAM_ENC_SET_DSC_CONFIG,
+	LINK_INCREASE_MST_PAYLOAD,
+	LINK_REDUCE_MST_PAYLOAD,
+	DP_TRACE_SOURCE_SEQUENCE,
+	DP_SET_TEST_PATTERN,
+	LINK_SET_DPMS_OFF,
+	DISABLE_AUDIO_STREAM,
+	PREPARE_BANDWIDTH,
+	LINK_SET_DPMS_ON,
 	/* This must be the last value in this enum, add new ones above */
 	HWSS_BLOCK_SEQUENCE_FUNC_COUNT
 };
@@ -1201,6 +1360,14 @@ struct hw_sequencer_funcs {
 	void (*prepare_ddc)(struct dc_link *link);
 
 	void (*get_dcc_en_bits)(struct dc *dc, int *dcc_en_bits);
+
+	enum dc_status (*setup_hdmi_frl_link)(
+			struct dc_link *link,
+			int hpo_inst,
+			enum clock_source_id frl_phy_clock_source_id);
+
+	unsigned int (*get_max_dispclk_mhz)(struct dc *dc,
+			struct dc_state *context);
 
 	/* Idle Optimization Related */
 	bool (*apply_idle_power_optimizations)(struct dc *dc, bool enable);
@@ -1454,6 +1621,42 @@ void hwss_dsc_read_state(union block_sequence_params *params);
 void hwss_dsc_calculate_and_set_config(union block_sequence_params *params);
 
 void hwss_dsc_enable_with_opp(union block_sequence_params *params);
+
+void hwss_dsc_set_config_simple(union block_sequence_params *params);
+
+void hwss_stream_enc_update_hdmi_info_packets(union block_sequence_params *params);
+
+void hwss_hpo_frl_stream_enc_update_hdmi_info_packets(union block_sequence_params *params);
+
+void hwss_hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num(union block_sequence_params *params);
+
+void hwss_hpo_dp_stream_enc_update_dp_info_packets(union block_sequence_params *params);
+
+void hwss_stream_enc_update_dp_info_packets_sdp_line_num(union block_sequence_params *params);
+
+void hwss_stream_enc_update_dp_info_packets(union block_sequence_params *params);
+
+void hwss_stream_enc_dp_set_dsc_config(union block_sequence_params *params);
+
+void hwss_hpo_dp_stream_enc_dp_set_dsc_pps_info_packet(union block_sequence_params *params);
+
+void hwss_stream_enc_dp_set_dsc_pps_info_packet(union block_sequence_params *params);
+
+void hwss_set_dmdata_attributes(union block_sequence_params *params);
+
+void hwss_dp_trace_source_sequence(union block_sequence_params *params);
+
+void hwss_link_increase_mst_payload(union block_sequence_params *params);
+
+void hwss_link_reduce_mst_payload(union block_sequence_params *params);
+
+void hwss_dp_set_test_pattern(union block_sequence_params *params);
+
+void hwss_link_set_dpms_off(union block_sequence_params *params);
+
+void hwss_prepare_bandwidth(struct dc *dc, union block_sequence_params *params);
+
+void hwss_link_set_dpms_on(union block_sequence_params *params);
 
 void hwss_program_tg(union block_sequence_params *params);
 
@@ -2055,5 +2258,114 @@ void hwss_add_opp_program_left_edge_extra_pixel(struct block_sequence_state *seq
 		struct output_pixel_processor *opp,
 		enum dc_pixel_encoding pixel_encoding,
 		bool is_otg_master);
+
+void hwss_add_hubp_enable_3dlut_fl(struct block_sequence_state *seq_state,
+		struct hubp *hubp);
+
+void hwss_add_begin_cursor_offload_update(struct block_sequence_state *seq_state,
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_cursor_lock(struct block_sequence_state *seq_state,
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx,
+		bool lock);
+
+void hwss_add_send_update_cursor_info_to_dmu(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx,
+		int index);
+
+void hwss_add_update_cursor_offload_pipe(struct block_sequence_state *seq_state,
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_commit_cursor_offload_update(struct block_sequence_state *seq_state,
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_stream_enc_update_hdmi_info_packets(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_hpo_frl_stream_enc_update_hdmi_info_packets(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_hpo_dp_stream_enc_update_dp_info_packets_sdp_line_num(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_hpo_dp_stream_enc_update_dp_info_packets(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_stream_enc_update_dp_info_packets_sdp_line_num(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_stream_enc_update_dp_info_packets(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_dsc_set_config(struct block_sequence_state *seq_state,
+		struct display_stream_compressor *dsc,
+		const struct dsc_config *dsc_cfg,
+		const struct dsc_optc_config *dsc_optc_cfg);
+
+void hwss_add_stream_enc_dp_set_dsc_config(struct block_sequence_state *seq_state,
+		struct stream_encoder *stream_enc,
+		const struct dsc_optc_config *dsc_optc_cfg);
+
+void hwss_add_hpo_dp_stream_enc_dp_set_dsc_pps_info_packet(struct block_sequence_state *seq_state,
+		struct hpo_dp_stream_encoder *hpo_dp_stream_enc,
+		bool immediate_update,
+		uint8_t *dsc_packed_pps,
+		bool pps_sdp_stream);
+
+void hwss_add_stream_enc_dp_set_dsc_pps_info_packet(struct block_sequence_state *seq_state,
+		struct stream_encoder *stream_enc,
+		bool immediate_update,
+		uint8_t *dsc_packed_pps,
+		bool pps_sdp_stream);
+
+void hwss_add_hpo_frl_stream_enc_set_dsc_config(struct block_sequence_state *seq_state,
+		struct hpo_frl_stream_encoder *hpo_frl_stream_enc,
+		const struct dc_crtc_timing *timing,
+		uint8_t *dsc_packed_pps);
+
+void hwss_add_setup_periodic_interrupt(struct block_sequence_state *seq_state,
+		struct dc *dc,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_dp_trace_source_sequence(struct block_sequence_state *seq_state,
+		struct dc_link *link,
+		enum dpcd_source_sequence source);
+
+void hwss_add_set_dmdata_attributes(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_link_increase_mst_payload(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx,
+		uint32_t mst_stream_bw);
+
+void hwss_add_link_reduce_mst_payload(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx,
+		uint32_t mst_stream_bw);
+
+void hwss_add_dp_set_test_pattern(struct block_sequence_state *seq_state,
+		struct dc_link *link,
+		enum dp_test_pattern test_pattern,
+		enum dp_test_pattern_color_space test_pattern_color_space,
+		const struct link_training_settings *p_link_settings,
+		const unsigned char *p_custom_pattern,
+		unsigned int cust_pattern_size);
+
+void hwss_add_link_set_dpms_off(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_disable_audio_stream(struct block_sequence_state *seq_state,
+		struct pipe_ctx *pipe_ctx);
+
+void hwss_add_prepare_bandwidth(struct block_sequence_state *seq_state,
+		struct dc *dc,
+		struct dc_state *context);
+
+void hwss_add_link_set_dpms_on(struct block_sequence_state *seq_state,
+		struct dc_state *state,
+		struct pipe_ctx *pipe_ctx);
 
 #endif /* __DC_HW_SEQUENCER_H__ */
