@@ -1379,7 +1379,7 @@ int ovl_ensure_verity_loaded(const struct path *datapath)
 	struct inode *inode = d_inode(datapath->dentry);
 	struct file *filp;
 
-	if (IS_VERITY(inode) && fsverity_get_info(inode) == NULL) {
+	if (IS_VERITY(inode) && !fsverity_get_info(inode)) {
 		/*
 		 * If this inode was not yet opened, the verity info hasn't been
 		 * loaded yet, so we need to do that here to force it into memory.
