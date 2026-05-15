@@ -342,6 +342,9 @@ struct asus_wmi {
 /* Global to allow setting externally without requiring driver data */
 static enum asus_ally_mcu_hack use_ally_mcu_hack = ASUS_WMI_ALLY_MCU_HACK_INIT;
 
+/* Global asus_wmi instance for use by exported functions */
+static struct asus_wmi *asus_wmi_instance;
+
 #if IS_ENABLED(CONFIG_ASUS_WMI_DEPRECATED_ATTRS)
 static void asus_wmi_show_deprecated(void)
 {
@@ -3999,6 +4002,28 @@ static int asus_wmi_custom_fan_curve_init(struct asus_wmi *asus)
 	return 0;
 }
 
+/*
+ * Returns true if at least one custom fan curve is active
+ *
+ * Used by asus-armoury to check if PPT writes will be accepted by the BIOS
+ * on models that require an active fan curve for TDP changes.
+ */
+bool asus_wmi_custom_fan_curve_is_enabled(void)
+{
+	struct asus_wmi *asus = asus_wmi_instance;
+	struct fan_curve_data *curves;
+
+	if (!asus)
+		return false;
+
+	curves = asus->custom_fan_curves;
+
+	return (asus->cpu_fan_curve_available && curves[FAN_CURVE_DEV_CPU].enabled) ||
+	       (asus->gpu_fan_curve_available && curves[FAN_CURVE_DEV_GPU].enabled) ||
+	       (asus->mid_fan_curve_available && curves[FAN_CURVE_DEV_MID].enabled);
+}
+EXPORT_SYMBOL_NS_GPL(asus_wmi_custom_fan_curve_is_enabled, "ASUS_WMI");
+
 /* Throttle thermal policy ****************************************************/
 static int throttle_thermal_policy_write(struct asus_wmi *asus)
 {
@@ -5165,6 +5190,8 @@ static int asus_wmi_add(struct platform_device *pdev)
 
 	asus_wmi_debugfs_init(asus);
 
+	asus_wmi_instance = asus;
+
 	return 0;
 
 fail_wmi_handler:
@@ -5208,6 +5235,7 @@ static void asus_wmi_remove(struct platform_device *device)
 	throttle_thermal_policy_set_default(asus);
 	asus_wmi_battery_exit(asus);
 
+	asus_wmi_instance = NULL;
 	kfree(asus);
 }
 
