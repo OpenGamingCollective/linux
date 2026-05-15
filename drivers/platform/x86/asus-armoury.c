@@ -127,6 +127,13 @@ static ssize_t pending_reboot_show(struct kobject *kobj, struct kobj_attribute *
 
 static struct kobj_attribute pending_reboot = __ATTR_RO(pending_reboot);
 
+static ssize_t requires_fan_curve_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", asus_armoury.requires_fan_curve);
+}
+
+static struct kobj_attribute requires_fan_curve = __ATTR_RO(requires_fan_curve);
+
 static bool asus_bios_requires_reboot(struct kobj_attribute *attr)
 {
 	return !strcmp(attr->attr.name, "gpu_mux_mode") ||
@@ -914,6 +921,12 @@ static int asus_fw_attr_add(void)
 		goto err_destroy_kset;
 	}
 
+	err = sysfs_create_file(&asus_armoury.fw_attr_kset->kobj, &requires_fan_curve.attr);
+	if (err) {
+		pr_err("Failed to create requires_fan_curve attribute\n");
+		goto err_destroy_kset;
+	}
+
 	asus_armoury.mini_led_dev_id = 0;
 	if (armoury_has_devstate(ASUS_WMI_DEVID_MINI_LED_MODE))
 		asus_armoury.mini_led_dev_id = ASUS_WMI_DEVID_MINI_LED_MODE;
@@ -987,6 +1000,7 @@ err_remove_mini_led_group:
 	if (asus_armoury.mini_led_dev_id)
 		sysfs_remove_group(&asus_armoury.fw_attr_kset->kobj, &mini_led_mode_attr_group);
 err_remove_file:
+	sysfs_remove_file(&asus_armoury.fw_attr_kset->kobj, &requires_fan_curve.attr);
 	sysfs_remove_file(&asus_armoury.fw_attr_kset->kobj, &pending_reboot.attr);
 err_destroy_kset:
 	kset_unregister(asus_armoury.fw_attr_kset);
@@ -1161,6 +1175,7 @@ static void __exit asus_fw_exit(void)
 	if (asus_armoury.mini_led_dev_id)
 		sysfs_remove_group(&asus_armoury.fw_attr_kset->kobj, &mini_led_mode_attr_group);
 
+	sysfs_remove_file(&asus_armoury.fw_attr_kset->kobj, &requires_fan_curve.attr);
 	sysfs_remove_file(&asus_armoury.fw_attr_kset->kobj, &pending_reboot.attr);
 	kset_unregister(asus_armoury.fw_attr_kset);
 	device_destroy(&firmware_attributes_class, MKDEV(0, 0));

@@ -492,3 +492,28 @@ Description:
 		log entry size identifies audit log size for the current BIOS version.
 		The current size is 16 bytes but it can be up to 128 bytes long in future BIOS
 		versions.
+
+What:		/sys/class/firmware-attributes/asus-armoury/attributes/requires_fan_curve
+Date:		May 2026
+KernelVersion:	7.1
+Contact:	platform-driver-x86@vger.kernel.org
+Description:
+		A read-only attribute that reads 1 on ASUS ROG models where the
+		BIOS requires a custom fan curve to be active before Package
+		Power Tracking (PPT) writes take effect. On affected models, the
+		BIOS silently ignores writes to ppt_pl1_spl, ppt_pl2_sppt,
+		ppt_pl3_fppt, ppt_apu_sppt and ppt_platform_sppt unless a custom
+		fan curve has been written via the asus_custom_fan_curve hwmon
+		device.
+
+		The kernel rejects PPT writes with -EBUSY on these models when
+		no fan curve is active. Userspace tools can read this attribute
+		to surface a clear prerequisite to the user instead of letting
+		the write appear to succeed at the firmware-attribute layer
+		while the BIOS discards it.
+
+			==	==============================================
+			0	No fan curve prerequisite for PPT writes.
+			1	A custom fan curve must be active; PPT writes
+				return -EBUSY otherwise.
+			==	==============================================
