@@ -23,6 +23,7 @@
 /*
  */
 
+#include "linux/export.h"
 #include <linux/acpi.h>
 #include <linux/dmi.h>
 #include <linux/hid.h>
@@ -34,6 +35,7 @@
 #include <linux/leds.h>
 
 #include "hid-ids.h"
+#include "hid-asus.h"
 
 MODULE_AUTHOR("Yusuke Fujimaki <usk.fujimaki@gmail.com>");
 MODULE_AUTHOR("Brendan McGrath <redmcg@redmandi.dyndns.org>");
@@ -693,7 +695,7 @@ static int mcu_request_version(struct hid_device *hdev)
 	return ret;
 }
 
-static void validate_mcu_fw_version(struct hid_device *hdev, int idProduct)
+void validate_mcu_fw_version(struct hid_device *hdev, int idProduct)
 {
 	int min_version, version;
 
@@ -721,12 +723,11 @@ static void validate_mcu_fw_version(struct hid_device *hdev, int idProduct)
 		set_ally_mcu_powersave(true);
 	}
 }
+EXPORT_SYMBOL_NS(validate_mcu_fw_version, "HID_ASUS");
 
 static int asus_kbd_register_leds(struct hid_device *hdev)
 {
 	struct asus_drvdata *drvdata = hid_get_drvdata(hdev);
-	struct usb_interface *intf;
-	struct usb_device *udev;
 	unsigned char kbd_func;
 	int ret;
 
@@ -742,6 +743,15 @@ static int asus_kbd_register_leds(struct hid_device *hdev)
 	/* Check for backlight support */
 	if (!(kbd_func & SUPPORT_KBD_BACKLIGHT))
 		return -ENODEV;
+
+	#if !IS_REACHABLE(CONFIG_HID_ASUS_ALLY)
+	if (drvdata->quirks & QUIRK_ROG_ALLY_XPAD) {
+		struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
+		struct usb_device *udev = interface_to_usbdev(intf);
+		validate_mcu_fw_version(hdev,
+			le16_to_cpu(udev->descriptor.idProduct));
+	}
+	#endif /* !IS_REACHABLE(CONFIG_HID_ASUS_ALLY) */
 
 	if (drvdata->quirks & QUIRK_ROG_NKEY_ID1ID2_INIT) {
 		asus_kbd_init(hdev, FEATURE_KBD_LED_REPORT_ID1);
@@ -1195,6 +1205,8 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	struct hid_report_enum *rep_enum;
 	struct asus_drvdata *drvdata;
+	struct usb_host_endpoint *ep;
+	struct usb_interface *intf;
 	struct hid_report *rep;
 	bool is_vendor = false;
 	int ret;
@@ -1208,6 +1220,18 @@ static int asus_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	hid_set_drvdata(hdev, drvdata);
 
 	drvdata->quirks = id->driver_data;
+
+	/* Ignore these endpoints as they are used by hid-asus-ally */
+	#if IS_REACHABLE(CONFIG_HID_ASUS_ALLY)
+	if (drvdata->quirks & QUIRK_ROG_ALLY_XPAD) {
+		intf = to_usb_interface(hdev->dev.parent);
+		ep = intf->cur_altsetting->endpoint;
+		if (ep->desc.bEndpointAddress == ROG_ALLY_X_INTF_IN ||
+			ep->desc.bEndpointAddress == ROG_ALLY_CFG_INTF_IN ||
+			ep->desc.bEndpointAddress == ROG_ALLY_CFG_INTF_OUT)
+			return -ENODEV;
+	}
+	#endif /* IS_REACHABLE(CONFIG_HID_ASUS_ALLY) */
 
 	/*
 	 * T90CHI's keyboard dock returns same ID values as T100CHI's dock.
