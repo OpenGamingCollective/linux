@@ -13541,82 +13541,78 @@ more_balance:
 		}
 	}
 
-	if (!ld_moved) {
-		schedstat_inc(sd->lb_failed[idle]);
-		/*
-		 * Increment the failure counter only on periodic balance.
-		 * We do not want newidle balance, which can be very
-		 * frequent, pollute the failure counter causing
-		 * excessive cache_hot migrations and active balances.
-		 *
-		 * Similarly for migration_misfit which is not related to
-		 * load/util migration, don't pollute nr_balance_failed.
-		 *
-		 * The same for cache aware scheduling's allowance for
-		 * load imbalance. If regular load balance does not
-		 * migrate task due to LLC locality, it is a expected
-		 * behavior and don't pollute nr_balance_failed.
-		 * See can_migrate_task().
-		 */
-		if (idle != CPU_NEWLY_IDLE &&
-		    env.migration_type != migrate_misfit &&
-		    !(env.flags & LBF_LLC_PINNED))
-			sd->nr_balance_failed++;
-
-		if (need_active_balance(&env)) {
-			unsigned long flags;
-
-			raw_spin_rq_lock_irqsave(busiest, flags);
-
-			/*
-			 * Don't kick the active_load_balance_cpu_stop,
-			 * if the curr task on busiest CPU can't be
-			 * moved to this_cpu:
-			 */
-			if (!cpumask_test_cpu(this_cpu, busiest->curr->cpus_ptr)) {
-				raw_spin_rq_unlock_irqrestore(busiest, flags);
-				goto out_one_pinned;
-			}
-
-			/* Record that we found at least one task that could run on this_cpu */
-			env.flags &= ~LBF_ALL_PINNED;
-
-			/*
-			 * ->active_balance synchronizes accesses to
-			 * ->active_balance_work.  Once set, it's cleared
-			 * only after active load balance is finished.
-			 */
-			if (busiest->active_balance)
-				goto no_active_balance;
-
-			/*
-			 * @busiest dropped its rq_lock in the middle of
-			 * scheduling out its ->curr task (->on_rq := 0), no
-			 * need to forcefully punt it away with active balance.
-			 */
-			if (!busiest->curr->on_rq)
-				goto no_active_balance;
-
-			busiest->active_balance = 1;
-			busiest->push_cpu = this_cpu;
-			active_balance = 1;
-no_active_balance:
-			preempt_disable();
-			raw_spin_rq_unlock_irqrestore(busiest, flags);
-			if (active_balance) {
-				stop_one_cpu_nowait(cpu_of(busiest),
-					active_load_balance_cpu_stop, busiest,
-					&busiest->active_balance_work);
-			}
-			preempt_enable();
-		}
-	} else {
+	if (ld_moved) {
 		sd->nr_balance_failed = 0;
+		goto out_unbalanced;
 	}
 
+	schedstat_inc(sd->lb_failed[idle]);
+	/*
+	 * Increment the failure counter only on periodic balance.
+	 * We do not want newidle balance, which can be very
+	 * frequent, pollute the failure counter causing
+	 * excessive cache_hot migrations and active balances.
+	 *
+	 * Similarly for migration_misfit which is not related to
+	 * load/util migration, don't pollute nr_balance_failed.
+	 *
+	 * The same for cache aware scheduling's allowance for
+	 * load imbalance. If regular load balance does not
+	 * migrate task due to LLC locality, it is a expected
+	 * behavior and don't pollute nr_balance_failed.
+	 * See can_migrate_task().
+	 */
+	if (idle != CPU_NEWLY_IDLE &&
+	    env.migration_type != migrate_misfit &&
+	    !(env.flags & LBF_LLC_PINNED))
+		sd->nr_balance_failed++;
+
+	if (!need_active_balance(&env))
+		goto out_unbalanced;
+
+	scoped_guard (raw_spin_rq_lock_irqsave, busiest) {
+		/*
+		 * Don't kick the active_load_balance_cpu_stop,
+		 * if the curr task on busiest CPU can't be
+		 * moved to this_cpu:
+		 */
+		if (!cpumask_test_cpu(this_cpu, busiest->curr->cpus_ptr))
+			goto out_one_pinned;
+
+		/* Record that we found at least one task that could run on this_cpu */
+		env.flags &= ~LBF_ALL_PINNED;
+
+		/*
+		 * ->active_balance synchronizes accesses to
+		 * ->active_balance_work.  Once set, it's cleared
+		 * only after active load balance is finished.
+		 */
+		if (busiest->active_balance)
+			goto out_unbalanced;
+
+		/*
+		 * @busiest dropped its rq_lock in the middle of
+		 * scheduling out its ->curr task (->on_rq := 0), no
+		 * need to forcefully punt it away with active balance.
+		 */
+		if (!busiest->curr->on_rq)
+			goto out_unbalanced;
+
+		busiest->active_balance = 1;
+		busiest->push_cpu = this_cpu;
+		active_balance = 1;
+		preempt_disable();
+	}
+	if (active_balance) {
+		stop_one_cpu_nowait(cpu_of(busiest),
+				    active_load_balance_cpu_stop, busiest,
+				    &busiest->active_balance_work);
+	}
+	preempt_enable();
+
+out_unbalanced:
 	/* We were unbalanced, so reset the balancing interval */
 	sd->balance_interval = sd->min_interval;
-
 	goto out;
 
 out_balanced:
