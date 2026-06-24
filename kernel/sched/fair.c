@@ -9759,6 +9759,15 @@ static inline bool set_preempt_buddy(struct cfs_rq *cfs_rq, struct sched_entity 
 	return true;
 }
 
+static inline bool set_short_buddy(struct cfs_rq *cfs_rq, struct sched_entity *pse)
+{
+	if (cfs_rq->next && cfs_rq->next->slice < pse->slice)
+		return false;
+
+	set_next_buddy(cfs_rq, pse);
+	return true;
+}
+
 /*
  * WF_SYNC|WF_TTWU indicates the waker expects to sleep but it is not
  * strictly enforced because the hint is either misunderstood or
@@ -9933,7 +9942,7 @@ pick:
 preempt:
 	if (preempt_action == PREEMPT_WAKEUP_SHORT) {
 		cancel_protect_slice(se);
-		clear_buddies(cfs_rq, se);
+		set_short_buddy(cfs_rq, pse);
 	}
 
 	resched_curr_lazy(rq);
