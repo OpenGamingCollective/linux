@@ -9869,16 +9869,17 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
 	if (cse_is_idle && !pse_is_idle)
 		goto preempt;
 
+	update_curr_fair(rq);
+
 	if (cse_is_idle != pse_is_idle)
-		return;
+		goto update;
 
 	/*
 	 * BATCH and IDLE tasks do not preempt others.
 	 */
 	if (unlikely(!normal_policy(p->policy)))
-		return;
+		goto update;
 
-	update_curr_fair(rq);
 	/*
 	 * If @p has a shorter slice than current and @p is eligible, override
 	 * current's slice protection in order to allow preemption.
@@ -9895,7 +9896,7 @@ static void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_f
 	 * EEVDF to forcibly queue an ineligible task.
 	 */
 	if ((wake_flags & WF_FORK) || pse->sched_delayed)
-		return;
+		goto update;
 
 	/* Prefer picking wakee soon if appropriate. */
 	if (sched_feat(NEXT_BUDDY) && set_preempt_buddy(cfs_rq, pse)) {
@@ -9936,7 +9937,7 @@ pick:
 	 */
 	if (preempt_action == PREEMPT_WAKEUP_SHORT && entity_eligible(cfs_rq, pse))
 		goto preempt;
-
+update:
 	if (sched_feat(RUN_TO_PARITY))
 		update_protect_slice(cfs_rq, se);
 
