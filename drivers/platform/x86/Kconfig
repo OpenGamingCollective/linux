@@ -1055,6 +1055,8 @@ config OXP_EC
 	depends on ACPI_BATTERY
 	depends on HWMON
 	depends on X86
+	depends on INPUT
+	depends on USB
 	help
 		Enables support for the platform EC of OneXPlayer and AOKZOE
 		handheld devices. This includes fan speed, fan controls, and
