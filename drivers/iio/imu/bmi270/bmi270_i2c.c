@@ -45,6 +45,8 @@ static const struct acpi_device_id bmi270_acpi_match[] = {
 	{ "BMI0260",  (kernel_ulong_t)&bmi260_chip_info },
 	/* OrangePi Neo 2026 (since BIOS BCPH01_V1.20), etc. */
 	{ "BOSC0260", (kernel_ulong_t)&bmi260_chip_info },
+	/* OneXPlayer X1 Pro (AMD), etc. */
+	{ "10EC5280", (kernel_ulong_t)&bmi260_chip_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, bmi270_acpi_match);
