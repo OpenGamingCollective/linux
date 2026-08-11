@@ -7745,8 +7745,22 @@ create_stream_for_sink(struct drm_connector *connector,
 	update_stream_signal(stream, sink);
 
 	if (stream->signal == SIGNAL_TYPE_HDMI_TYPE_A ||
-	    stream->signal == SIGNAL_TYPE_HDMI_FRL)
-		mod_build_hf_vsif_infopacket(stream, &stream->vsp_infopacket, false, false);
+	    stream->signal == SIGNAL_TYPE_HDMI_FRL) {
+		/*
+		 * Enable HDMI ALLM (Auto Low-Latency Mode) when the sink
+		 * advertises ALLM in the SCDS and the content type is Game.
+		 * Setting content-type = Game is how userspace requests the
+		 * Sink's low-latency mode (HDMI GCTS HF1-56).
+		 */
+		bool allm = connector->display_info.hdmi.allm &&
+			stream->content_type == DISPLAY_CONTENT_TYPE_GAME;
+
+		drm_dbg_driver(dev,
+			       "ALLM: set mode: sink_allm=%d content_type=%d -> ALLM_Mode=%d\n",
+			    connector->display_info.hdmi.allm, stream->content_type, allm);
+
+		mod_build_hf_vsif_infopacket(stream, &stream->vsp_infopacket, allm, allm);
+	}
 
 	if (stream->signal == SIGNAL_TYPE_DISPLAY_PORT ||
 	    stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST ||
@@ -9997,6 +10011,37 @@ static void update_freesync_state_on_stream(
 	new_stream->vrr_infopacket = vrr_infopacket;
 	new_stream->allow_freesync = mod_freesync_get_freesync_enabled(&vrr_params);
 
+	/*
+	 * HDMI ALLM: transmit the HF-VSIF with ALLM_Mode=1 when the sink
+	 * advertises ALLM in the SCDS and either the content type is Game
+	 * (HF1-56) or Gaming-VRR is active (VRR_EN=1, HF1-58 step 8.3.1).
+	 * HDMI 2.1 7.6.6.
+	 */
+	if (new_stream->signal == SIGNAL_TYPE_HDMI_TYPE_A ||
+	    new_stream->signal == SIGNAL_TYPE_HDMI_FRL) {
+		struct dc_info_packet vsp_infopacket = {0};
+		bool sink_allm = aconn && aconn->base.display_info.hdmi.allm;
+		bool allm = sink_allm &&
+			(new_stream->content_type == DISPLAY_CONTENT_TYPE_GAME ||
+			 vrr_params.state == VRR_STATE_ACTIVE_VARIABLE ||
+			 vrr_params.state == VRR_STATE_ACTIVE_FIXED);
+		bool allm_changed;
+
+		mod_build_hf_vsif_infopacket(new_stream, &vsp_infopacket, allm, allm);
+
+		allm_changed = memcmp(&new_stream->vsp_infopacket, &vsp_infopacket,
+				      sizeof(vsp_infopacket)) != 0;
+		new_crtc_state->freesync_vrr_info_changed |= allm_changed;
+		new_stream->vsp_infopacket = vsp_infopacket;
+
+		if (allm_changed)
+			drm_dbg_driver(adev_to_drm(adev),
+				       "ALLM: flip on crtc=%u: sink_allm=%d content_type=%d vrr_state=%d -> ALLM_Mode=%d\n",
+				    new_crtc_state->base.crtc->base.id,
+				    sink_allm,
+				    new_stream->content_type, vrr_params.state, allm);
+	}
+
 	if (new_crtc_state->freesync_vrr_info_changed)
 		drm_dbg_kms(adev_to_drm(adev), "VRR packet update: crtc=%u enabled=%d state=%d",
 			      new_crtc_state->base.crtc->base.id,
@@ -10563,9 +10608,12 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		}
 
 		if (acrtc_state->stream) {
-			if (acrtc_state->freesync_vrr_info_changed)
+			if (acrtc_state->freesync_vrr_info_changed) {
 				bundle->stream_update.vrr_infopacket =
 					&acrtc_state->stream->vrr_infopacket;
+				bundle->stream_update.vsp_infopacket =
+					&acrtc_state->stream->vsp_infopacket;
+			}
 		}
 	}
 
