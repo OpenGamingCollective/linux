@@ -23,12 +23,13 @@ jobs:
 
           # Expected format: v<kernel-version>-ogc<rev>
           # Example: v6.6.123-ogc1
-          if [[ ! "$OGC_TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-rc[0-9]+)?-ogc[0-9]+$ ]]; then
+          if [[ ! "$OGC_TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-rc[0-9]+)?(-lts)?-ogc[0-9]+$ ]]; then
             echo "::error::Invalid tag '$OGC_TAG'. Expected format 'v<kernel-version>-ogc<rev>' (example: v6.6.123-ogc1)."
             exit 1
           fi
 
           UPSTREAM_TAG="${OGC_TAG%-ogc*}"
+          UPSTREAM_TAG="${UPSTREAM_TAG%-lts}"
 
           echo "ogc_tag=$OGC_TAG" >> "$GITHUB_OUTPUT"
           echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
