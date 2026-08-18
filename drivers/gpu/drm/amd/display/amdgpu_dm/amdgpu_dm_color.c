@@ -187,7 +187,7 @@ struct fixed31_32 amdgpu_dm_fixpt_from_s3132(__u64 x)
 }
 EXPORT_IF_KUNIT(amdgpu_dm_fixpt_from_s3132);
 
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 /* Pre-defined Transfer Functions (TF)
  *
  * AMD driver supports pre-defined mathematical functions for transferring
@@ -1461,7 +1461,7 @@ __set_dm_plane_degamma(struct drm_plane_state *plane_state,
 	const struct drm_color_lut *degamma_lut;
 	enum amdgpu_transfer_function tf = AMDGPU_TRANSFER_FUNCTION_DEFAULT;
 	uint32_t degamma_size;
-	bool has_degamma_lut;
+	bool has_degamma_lut, is_subsampled_format;
 	int ret;
 
 	degamma_lut = __extract_blob_lut(dm_plane_state->degamma_lut,
@@ -1491,12 +1491,20 @@ __set_dm_plane_degamma(struct drm_plane_state *plane_state,
 		if (ret)
 			return ret;
        } else {
-		dc_plane_state->in_transfer_func.type =
-			TF_TYPE_PREDEFINED;
+	       /* Check if format requires post-scale color processing (subsampled formats) */
+		is_subsampled_format = (dc_plane_state->format >= SURFACE_PIXEL_FORMAT_VIDEO_BEGIN &&
+					dc_plane_state->format < SURFACE_PIXEL_FORMAT_SUBSAMPLE_END);
+
+		dc_plane_state->in_transfer_func.type = TF_TYPE_PREDEFINED;
 
 		if (!mod_color_calculate_degamma_params(color_caps,
-		    &dc_plane_state->in_transfer_func, NULL, false))
+							&dc_plane_state->in_transfer_func,
+							NULL,
+							is_subsampled_format)) {
+			drm_err(plane_state->state->dev,
+				"Failed to calculate degamma params.\n");
 			return -ENOMEM;
+		}
 	}
 	return 0;
 }
