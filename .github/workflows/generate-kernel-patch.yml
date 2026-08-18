@@ -42,7 +42,7 @@ jobs:
 
       - name: Add kernel remote
         run: |
-          git remote add upstream https://github.com/gregkh/linux.git
+          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
           git fetch --depth=1 upstream "refs/tags/${{ steps.tag.outputs.upstream_tag }}:refs/tags/${{ steps.tag.outputs.upstream_tag }}"
 
       - name: Import signing key
