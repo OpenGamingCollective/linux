@@ -29,6 +29,7 @@
 #include <linux/io.h>
 
 #include "internal.h"
+#include "mm_init.h"
 
 #define INIT_MEMBLOCK_REGIONS			128
 #define INIT_PHYSMEM_REGIONS			4
@@ -2224,10 +2225,8 @@ static void __init free_unused_memmap(void)
 	}
 
 #ifdef CONFIG_SPARSEMEM
-	if (!IS_ALIGNED(prev_end, PAGES_PER_SECTION)) {
-		prev_end = pageblock_align(end);
+	if (!IS_ALIGNED(prev_end, PAGES_PER_SECTION))
 		free_memmap(prev_end, ALIGN(prev_end, PAGES_PER_SECTION));
-	}
 #endif
 }
 

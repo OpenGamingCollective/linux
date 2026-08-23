@@ -1477,7 +1477,7 @@ static int io_vec_fill_bvec(int ddir, struct iov_iter *iter,
 				struct iovec *iovec, unsigned nr_iovs,
 				struct iou_vec *vec)
 {
-	unsigned long folio_size = 1 << imu->folio_shift;
+	unsigned long folio_size = 1UL << imu->folio_shift;
 	unsigned long folio_mask = folio_size - 1;
 	struct bio_vec *res_bvec = vec->bvec;
 	size_t total_len = 0;
@@ -1653,8 +1653,12 @@ int io_import_reg_vec(int ddir, struct iov_iter *iter,
 	if (sizeof(struct bio_vec) > sizeof(struct iovec)) {
 		size_t bvec_bytes;
 
-		bvec_bytes = nr_segs * sizeof(struct bio_vec);
-		nr_segs = (bvec_bytes + sizeof(*iov) - 1) / sizeof(*iov);
+		if (check_mul_overflow((size_t)nr_segs, sizeof(struct bio_vec),
+				       &bvec_bytes) ||
+		    check_add_overflow(bvec_bytes, sizeof(*iov) - 1,
+				       &bvec_bytes))
+			return -EOVERFLOW;
+		nr_segs = bvec_bytes / sizeof(*iov);
 		nr_segs += nr_iovs;
 	}
 
