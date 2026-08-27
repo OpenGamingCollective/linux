@@ -18,6 +18,7 @@
 #include <linux/cleanup.h>
 #include <linux/completion.h>
 #include <linux/container_of.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/hid.h>
 #include <linux/kobject.h>
@@ -27,7 +28,6 @@
 #include <linux/mutex.h>
 #include <linux/pm.h>
 #include <linux/spinlock.h>
-#include <linux/spinlock_types.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/unaligned.h>
@@ -51,6 +51,7 @@
 #define CLAW_RGB_FRAME_OFFSET	0x24
 
 enum claw_command_index {
+	CLAW_COMMAND_TYPE_NONE =			0x00,
 	CLAW_COMMAND_TYPE_READ_PROFILE =		0x04,
 	CLAW_COMMAND_TYPE_READ_PROFILE_ACK =		0x05,
 	CLAW_COMMAND_TYPE_ACK =				0x06,
@@ -90,14 +91,19 @@ enum claw_key_index {
 
 enum claw_mkeys_function_index {
 	CLAW_MKEY_FUNCTION_MACRO,
-	CLAW_MKEY_FUNCTION_COMBO,
 	CLAW_MKEY_FUNCTION_DISABLED,
+	CLAW_MKEY_FUNCTION_COMBO,
+};
+
+enum claw_mode_field {
+	CLAW_FIELD_GAMEPAD_MODE,
+	CLAW_FIELD_MKEYS_FUNCTION,
 };
 
 static const char * const claw_mkeys_function_text[] = {
 	[CLAW_MKEY_FUNCTION_MACRO] =	"macro",
-	[CLAW_MKEY_FUNCTION_COMBO] =	"combination",
 	[CLAW_MKEY_FUNCTION_DISABLED] =	"disabled",
+	[CLAW_MKEY_FUNCTION_COMBO] =	"combination",
 };
 
 static const struct {
@@ -125,7 +131,7 @@ static const struct {
 	{ 0x15, "ABS_Y_UP"},
 	{ 0x16, "ABS_Y_DOWN"},
 	{ 0x17, "ABS_X_LEFT"},
-	{ 0x18, "ABS_X_LEFT_RIGHT"},
+	{ 0x18, "ABS_X_RIGHT"},
 	{ 0x19, "ABS_RY_UP"},
 	{ 0x1a, "ABS_RY_DOWN"},
 	{ 0x1b, "ABS_RX_LEFT"},
@@ -281,6 +287,19 @@ struct claw_command_report {
 	u8 data[59];
 } __packed;
 
+struct claw_profile_report {
+	u8 profile;
+	__be16 read_addr;
+} __packed;
+
+struct claw_mkey_report {
+	struct claw_profile_report;
+	u8 padding_0;
+	u8 padding_1;
+	u8 padding_2;
+	u8 codes[5];
+} __packed;
+
 struct rgb_zone {
 	u8 red;
 	u8 green;
@@ -291,9 +310,8 @@ struct rgb_frame {
 	struct rgb_zone zone[CLAW_RGB_ZONES];
 };
 
-struct rgb_report {
-	u8 profile;
-	__be16 read_addr;
+struct claw_rgb_report {
+	struct claw_profile_report;
 	u8 frame_bytes;
 	u8 padding;
 	u8 frame_count;
@@ -303,18 +321,29 @@ struct rgb_report {
 	struct rgb_frame zone_data;
 } __packed;
 
+struct claw_rumble_report {
+	struct claw_profile_report;
+	u8 padding;
+	u8 intensity;
+} __packed;
+
 struct claw_drvdata {
 	/* MCU General Variables */
 	enum claw_profile_ack_pending profile_pending;
+	struct completion orphan_ack_complete;
 	struct completion send_cmd_complete;
 	struct delayed_work cfg_resume;
 	struct delayed_work cfg_setup;
+	spinlock_t registration_lock; /* Lock for registration read/write */
 	struct mutex profile_mutex; /* mutex for profile_pending calls */
+	spinlock_t profile_lock; /* Lock for profile_pending read/write */
 	struct hid_device *hdev;
-	struct mutex mode_mutex; /* mutex for mode calls */
+	bool orphan_ack_pending;
 	struct mutex cfg_mutex; /* mutex for synchronous data */
 	struct mutex rom_mutex; /* mutex for SYNC_TO_ROM calls */
-	spinlock_t frame_lock; /* lock for read/write rgb_frames */
+	spinlock_t cmd_lock; /* Lock for cmd data read/write */
+	u8 waiting_cmd;
+	int cmd_status;
 	u16 bcd_device;
 	u8 ep;
 
@@ -326,7 +355,10 @@ struct claw_drvdata {
 	u8 rumble_intensity_right;
 	u8 rumble_intensity_left;
 	const u16 *bmap_addr;
+	spinlock_t rumble_lock; /* lock for rumble_intensity read/write */
+	spinlock_t mode_lock; /* Lock for mode data read/write */
 	bool rumble_support;
+	bool gp_registered;
 	bool bmap_support;
 
 	/* RGB Variables */
@@ -334,6 +366,8 @@ struct claw_drvdata {
 	enum claw_rgb_effect_index rgb_effect;
 	struct led_classdev_mc led_mc;
 	struct delayed_work rgb_queue;
+	spinlock_t frame_lock; /* lock for rgb_frames read/write */
+	bool rgb_registered;
 	u8 rgb_frame_count;
 	bool rgb_enabled;
 	u8 rgb_speed;
@@ -361,42 +395,56 @@ static int claw_gamepad_mode_event(struct claw_drvdata *drvdata,
 	    cmd_rep->data[1] >= ARRAY_SIZE(claw_mkeys_function_text))
 		return -EINVAL;
 
-	drvdata->gamepad_mode = cmd_rep->data[0];
-	drvdata->mkeys_function = cmd_rep->data[1];
+	scoped_guard(spinlock_irqsave, &drvdata->mode_lock) {
+		drvdata->gamepad_mode = cmd_rep->data[0];
+		drvdata->mkeys_function = cmd_rep->data[1];
+	}
 
 	return 0;
 }
 
 static int claw_profile_event(struct claw_drvdata *drvdata, struct claw_command_report *cmd_rep)
 {
-	struct rgb_report *frame;
+	enum claw_profile_ack_pending profile;
+	struct claw_rumble_report *rumble;
+	struct claw_mkey_report *mkeys;
+	struct claw_rgb_report *frame;
 	u16 rgb_addr, read_addr;
-	u8 *codes, f_idx;
+	u8 *codes, key, f_idx;
 	u16 frame_calc;
-	int i, ret = 0;
+	int i;
 
-	switch (drvdata->profile_pending) {
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		profile = drvdata->profile_pending;
+
+	switch (profile) {
 	case CLAW_M1_PENDING:
 	case CLAW_M2_PENDING:
-		codes = (drvdata->profile_pending == CLAW_M1_PENDING) ?
-			drvdata->m1_codes : drvdata->m2_codes;
+		key = (profile == CLAW_M1_PENDING) ? CLAW_KEY_M1 : CLAW_KEY_M2;
+		mkeys = (struct claw_mkey_report *)cmd_rep->data;
+		if (be16_to_cpu(mkeys->read_addr) != drvdata->bmap_addr[key])
+			return -EAGAIN;
+		codes = (profile == CLAW_M1_PENDING) ? drvdata->m1_codes : drvdata->m2_codes;
 		for (i = 0; i < CLAW_KEYS_MAX; i++)
-			codes[i] = (cmd_rep->data[6 + i]);
+			codes[i] = (mkeys->codes[i]);
 		break;
 	case CLAW_RGB_PENDING:
-		frame = (struct rgb_report *)cmd_rep->data;
+		frame = (struct claw_rgb_report *)cmd_rep->data;
 		rgb_addr = drvdata->rgb_addr;
 		read_addr = be16_to_cpu(frame->read_addr);
+
+		if (read_addr < drvdata->rgb_addr)
+			return -EAGAIN;
+
 		frame_calc = (read_addr - rgb_addr) / CLAW_RGB_FRAME_OFFSET;
 		if (frame_calc >= CLAW_RGB_MAX_FRAMES) {
-			dev_err(drvdata->led_mc.led_cdev.dev, "Got unsupported frame index: %x\n",
+			dev_err(&drvdata->hdev->dev, "Got unsupported frame index: %x\n",
 				frame_calc);
-			ret = -EINVAL;
-			goto err_pending;
+			return -EAGAIN;
 		}
 		f_idx = frame_calc;
 
-		scoped_guard(spinlock, &drvdata->frame_lock) {
+		scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
 			memcpy(&drvdata->rgb_frames[f_idx], &frame->zone_data,
 			       sizeof(struct rgb_frame));
 
@@ -413,10 +461,18 @@ static int claw_profile_event(struct claw_drvdata *drvdata, struct claw_command_
 
 		break;
 	case CLAW_RUMBLE_LEFT_PENDING:
-		drvdata->rumble_intensity_left = cmd_rep->data[4];
+		rumble = (struct claw_rumble_report *)cmd_rep->data;
+		if (be16_to_cpu(rumble->read_addr) != rumble_addr[0])
+			return -EAGAIN;
+		scoped_guard(spinlock_irqsave, &drvdata->rumble_lock)
+			drvdata->rumble_intensity_left = rumble->intensity;
 		break;
 	case CLAW_RUMBLE_RIGHT_PENDING:
-		drvdata->rumble_intensity_right = cmd_rep->data[4];
+		rumble = (struct claw_rumble_report *)cmd_rep->data;
+		if (be16_to_cpu(rumble->read_addr) != rumble_addr[1])
+			return -EAGAIN;
+		scoped_guard(spinlock_irqsave, &drvdata->rumble_lock)
+			drvdata->rumble_intensity_right = rumble->intensity;
 		break;
 	default:
 		dev_dbg(&drvdata->hdev->dev,
@@ -424,11 +480,10 @@ static int claw_profile_event(struct claw_drvdata *drvdata, struct claw_command_
 			cmd_rep->cmd);
 		return -EINVAL;
 	}
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->profile_pending = CLAW_NO_PENDING;
 
-err_pending:
-	drvdata->profile_pending = CLAW_NO_PENDING;
-
-	return ret;
+	return 0;
 }
 
 static int claw_raw_event(struct claw_drvdata *drvdata, struct hid_report *report,
@@ -448,21 +503,49 @@ static int claw_raw_event(struct claw_drvdata *drvdata, struct hid_report *repor
 	dev_dbg(&drvdata->hdev->dev, "Rx data as raw input report: [%*ph]\n",
 		CLAW_PACKET_SIZE, data);
 
+	guard(spinlock_irqsave)(&drvdata->cmd_lock);
 	switch (cmd_rep->cmd) {
 	case CLAW_COMMAND_TYPE_GAMEPAD_MODE_ACK:
 		ret = claw_gamepad_mode_event(drvdata, cmd_rep);
+		if (drvdata->waiting_cmd == CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE) {
+			drvdata->cmd_status = ret;
+			complete(&drvdata->send_cmd_complete);
+		}
+
 		break;
 	case CLAW_COMMAND_TYPE_READ_PROFILE_ACK:
 		ret = claw_profile_event(drvdata, cmd_rep);
+		/* Stale address received, ignore and keep waiting */
+		if (ret == -EAGAIN)
+			return 0;
+		if (drvdata->waiting_cmd == CLAW_COMMAND_TYPE_READ_PROFILE) {
+			drvdata->cmd_status = ret;
+			complete(&drvdata->send_cmd_complete);
+		}
+
 		break;
 	case CLAW_COMMAND_TYPE_ACK:
+		if (drvdata->orphan_ack_pending) {
+			drvdata->orphan_ack_pending = false;
+			complete(&drvdata->orphan_ack_complete);
+			break;
+		}
+
+		if (drvdata->waiting_cmd == CLAW_COMMAND_TYPE_NONE) {
+			dev_warn(&drvdata->hdev->dev, "Got unexpected ACK from MCU, ignoring\n");
+			break;
+		}
+
+		drvdata->cmd_status = 0;
+		complete(&drvdata->send_cmd_complete);
+
+		dev_dbg(&drvdata->hdev->dev, "Waiting CMD: %x\n", drvdata->waiting_cmd);
+
 		break;
 	default:
 		dev_dbg(&drvdata->hdev->dev, "Unknown command: %x\n", cmd_rep->cmd);
 		return 0;
 	}
-
-	complete(&drvdata->send_cmd_complete);
 
 	return ret;
 }
@@ -479,14 +562,28 @@ static int msi_raw_event(struct hid_device *hdev, struct hid_report *report,
 	return claw_raw_event(drvdata, report, data, size);
 }
 
-static int claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
-				 size_t len, unsigned int timeout)
+/* Caller must hold drvdata->cfg_mutex. */
+static int __claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
+				   size_t len, unsigned int timeout)
 {
 	unsigned char *dmabuf __free(kfree) = NULL;
 	u8 header[] = { CLAW_OUTPUT_REPORT_ID, 0, 0, 0x3c, index };
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	size_t header_size = ARRAY_SIZE(header);
+	bool orphaned;
 	int ret;
+
+	lockdep_assert_held(&drvdata->cfg_mutex);
+
+	/* If expecting an orphan ack, hold next event until MCU has time to clear it */
+	scoped_guard(spinlock_irqsave, &drvdata->cmd_lock)
+		orphaned = drvdata->orphan_ack_pending;
+
+	if (orphaned) {
+		wait_for_completion_timeout(&drvdata->orphan_ack_complete, msecs_to_jiffies(25));
+		scoped_guard(spinlock_irqsave, &drvdata->cmd_lock)
+			drvdata->orphan_ack_pending = false;
+	}
 
 	if (header_size + len > CLAW_PACKET_SIZE)
 		return -EINVAL;
@@ -500,31 +597,84 @@ static int claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
 	if (data && len)
 		memcpy(dmabuf + header_size, data, len);
 
-	guard(mutex)(&drvdata->cfg_mutex);
-	if (timeout)
-		reinit_completion(&drvdata->send_cmd_complete);
+	reinit_completion(&drvdata->send_cmd_complete);
+
+	scoped_guard(spinlock_irqsave, &drvdata->cmd_lock) {
+		if (timeout) {
+			drvdata->waiting_cmd = index;
+			drvdata->cmd_status = -ETIMEDOUT;
+		} else {
+			reinit_completion(&drvdata->orphan_ack_complete);
+			drvdata->waiting_cmd = CLAW_COMMAND_TYPE_NONE;
+			drvdata->orphan_ack_pending = true;
+		}
+	}
 
 	dev_dbg(&hdev->dev, "Send data as raw output report: [%*ph]\n",
 		CLAW_PACKET_SIZE, dmabuf);
 
 	ret = hid_hw_output_report(hdev, dmabuf, CLAW_PACKET_SIZE);
 	if (ret < 0)
-		return ret;
+		goto err;
 
 	ret = ret == CLAW_PACKET_SIZE ? 0 : -EIO;
 	if (ret)
-		return ret;
+		goto err;
 
 	if (timeout) {
 		ret = wait_for_completion_interruptible_timeout(&drvdata->send_cmd_complete,
 								msecs_to_jiffies(timeout));
 
 		dev_dbg(&hdev->dev, "Remaining timeout: %u\n", ret);
-		if (ret >= 0) /* preserve errors */
-			ret = ret == 0 ? -EBUSY : 0; /* timeout occurred : time remained */
+		ret = ret > 0 ? drvdata->cmd_status : ret ?: -EBUSY;
+		if (ret)
+			goto err;
 	}
 
+	scoped_guard(spinlock_irqsave, &drvdata->cmd_lock)
+		drvdata->waiting_cmd = CLAW_COMMAND_TYPE_NONE;
+
 	return ret;
+
+err:
+	scoped_guard(spinlock_irqsave, &drvdata->cmd_lock) {
+		drvdata->waiting_cmd = CLAW_COMMAND_TYPE_NONE;
+		drvdata->orphan_ack_pending = false;
+	}
+	return ret;
+}
+
+static int claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
+				 size_t len, unsigned int timeout)
+{
+	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
+
+	guard(mutex)(&drvdata->cfg_mutex);
+	return __claw_hw_output_report(hdev, index, data, len, timeout);
+}
+
+static int claw_switch_mode(struct hid_device *hdev, enum claw_mode_field field, u8 val)
+{
+	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
+	u8 data[2];
+
+	guard(mutex)(&drvdata->cfg_mutex);
+
+	scoped_guard(spinlock_irqsave, &drvdata->mode_lock) {
+		switch (field) {
+		case CLAW_FIELD_GAMEPAD_MODE:
+			data[0] = val;
+			data[1] = drvdata->mkeys_function;
+			break;
+		case CLAW_FIELD_MKEYS_FUNCTION:
+			data[0] = drvdata->gamepad_mode;
+			data[1] = val;
+			break;
+		}
+	}
+
+	return __claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SWITCH_MODE, data,
+				       ARRAY_SIZE(data), 0);
 }
 
 static ssize_t gamepad_mode_store(struct device *dev, struct device_attribute *attr,
@@ -533,7 +683,12 @@ static ssize_t gamepad_mode_store(struct device *dev, struct device_attribute *a
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	int i, ret = -EINVAL;
-	u8 data[2];
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(claw_gamepad_mode_text); i++) {
 		if (claw_gamepad_mode_text[i] && sysfs_streq(buf, claw_gamepad_mode_text[i])) {
@@ -544,11 +699,7 @@ static ssize_t gamepad_mode_store(struct device *dev, struct device_attribute *a
 	if (ret < 0)
 		return ret;
 
-	guard(mutex)(&drvdata->mode_mutex);
-	data[0] = ret;
-	data[1] = drvdata->mkeys_function;
-
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SWITCH_MODE, data, ARRAY_SIZE(data), 0);
+	ret = claw_switch_mode(hdev, CLAW_FIELD_GAMEPAD_MODE, ret);
 	if (ret)
 		return ret;
 
@@ -562,12 +713,18 @@ static ssize_t gamepad_mode_show(struct device *dev,
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	int ret, i;
 
-	guard(mutex)(&drvdata->mode_mutex);
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE, NULL, 0, 8);
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
+
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE, NULL, 0, 25);
 	if (ret)
 		return ret;
 
-	i = drvdata->gamepad_mode;
+	scoped_guard(spinlock_irqsave, &drvdata->mode_lock)
+		i = drvdata->gamepad_mode;
 
 	if (!claw_gamepad_mode_text[i] || claw_gamepad_mode_text[i][0] == '\0')
 		return sysfs_emit(buf, "unsupported\n");
@@ -588,7 +745,8 @@ static ssize_t gamepad_mode_index_show(struct device *dev,
 		count += sysfs_emit_at(buf, count, "%s ", claw_gamepad_mode_text[i]);
 	}
 
-	buf[count - 1] = '\n';
+	if (count)
+		buf[count - 1] = '\n';
 
 	return count;
 }
@@ -600,7 +758,12 @@ static ssize_t mkeys_function_store(struct device *dev, struct device_attribute 
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	int i, ret = -EINVAL;
-	u8 data[2];
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(claw_mkeys_function_text); i++) {
 		if (claw_mkeys_function_text[i] && sysfs_streq(buf, claw_mkeys_function_text[i])) {
@@ -611,11 +774,7 @@ static ssize_t mkeys_function_store(struct device *dev, struct device_attribute 
 	if (ret < 0)
 		return ret;
 
-	guard(mutex)(&drvdata->mode_mutex);
-	data[0] = drvdata->gamepad_mode;
-	data[1] = ret;
-
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SWITCH_MODE, data, ARRAY_SIZE(data), 0);
+	ret = claw_switch_mode(hdev, CLAW_FIELD_MKEYS_FUNCTION, ret);
 	if (ret)
 		return ret;
 
@@ -629,12 +788,18 @@ static ssize_t mkeys_function_show(struct device *dev, struct device_attribute *
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	int ret, i;
 
-	guard(mutex)(&drvdata->mode_mutex);
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE, NULL, 0, 8);
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
+
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE, NULL, 0, 25);
 	if (ret)
 		return ret;
 
-	i = drvdata->mkeys_function;
+	scoped_guard(spinlock_irqsave, &drvdata->mode_lock)
+		i = drvdata->mkeys_function;
 
 	if (i >= ARRAY_SIZE(claw_mkeys_function_text))
 		return sysfs_emit(buf, "unsupported\n");
@@ -651,7 +816,8 @@ static ssize_t mkeys_function_index_show(struct device *dev,
 	for (i = 0; i < ARRAY_SIZE(claw_mkeys_function_text); i++)
 		count += sysfs_emit_at(buf, count, "%s ", claw_mkeys_function_text[i]);
 
-	buf[count - 1] = '\n';
+	if (count)
+		buf[count - 1] = '\n';
 
 	return count;
 }
@@ -661,8 +827,15 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 			   const char *buf, size_t count)
 {
 	struct hid_device *hdev = to_hid_device(dev);
+	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	bool val;
 	int ret;
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
 
 	ret = kstrtobool(buf, &val);
 	if (ret)
@@ -679,7 +852,7 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_WO(reset);
 
-static int button_mapping_name_to_code(const char *name)
+static int mkey_mapping_name_to_code(const char *name)
 {
 	int i;
 
@@ -691,7 +864,7 @@ static int button_mapping_name_to_code(const char *name)
 	return -EINVAL;
 }
 
-static const char *button_mapping_code_to_name(u8 code)
+static const char *mkey_mapping_code_to_name(u8 code)
 {
 	int i;
 
@@ -706,18 +879,20 @@ static const char *button_mapping_code_to_name(u8 code)
 	return NULL;
 }
 
-DEFINE_FREE(argv, char **, if (_T) argv_free(_T))
-
-static int claw_buttons_store(struct device *dev, const char *buf, u8 mkey_idx)
+static int claw_mkey_store(struct device *dev, const char *buf, u8 mkey)
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
-	u8 data[] = { 0x01, (drvdata->bmap_addr[mkey_idx] >> 8) & 0xff,
-		      drvdata->bmap_addr[mkey_idx] & 0xff, 0x07,
-		      0x04, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff };
-	char **raw_keys __free(argv) = NULL;
-	size_t len = ARRAY_SIZE(data);
+	struct claw_mkey_report report = { {0x01, cpu_to_be16(drvdata->bmap_addr[mkey])},
+				   0x07, 0x04, 0x00, {0xff, 0xff, 0xff, 0xff, 0xff} };
+	char **raw_keys __free(argv_free) = NULL;
 	int ret, key_count, i;
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
 
 	raw_keys = argv_split(GFP_KERNEL, buf, &key_count);
 	if (!raw_keys)
@@ -727,51 +902,62 @@ static int claw_buttons_store(struct device *dev, const char *buf, u8 mkey_idx)
 		return -EINVAL;
 
 	if (key_count == 0)
-		return 0;
+		goto set_buttons;
 
 	for (i = 0; i < key_count; i++) {
-		ret = button_mapping_name_to_code(raw_keys[i]);
-		if (ret)
+		ret = mkey_mapping_name_to_code(raw_keys[i]);
+		if (ret < 0)
 			return ret;
 
-		data[6 + i] = ret;
+		report.codes[i] = ret;
 	}
 
+set_buttons:
 	scoped_guard(mutex, &drvdata->rom_mutex) {
 		ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
-					    data, len, 8);
+					    (u8 *)&report, sizeof(report), 25);
 		if (ret)
 			return ret;
-
-		ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 8);
+		/* MCU will not send ACK until the USB transaction completes. ACK is sent
+		 * immediately after and will hit the stale state machine, before the next
+		 * command re-arms the state machine. Timeout 0 ensures no deadlock waiting
+		 * for ACK that ill never come.
+		 */
+		ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 0);
 	}
 
 	return ret;
 }
 
-static int claw_buttons_show(struct device *dev, char *buf, enum claw_key_index m_key)
+static int claw_mkey_show(struct device *dev, char *buf, enum claw_key_index m_key)
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
-	u8 data[] = { 0x01, (drvdata->bmap_addr[m_key] >> 8) & 0xff,
-		      drvdata->bmap_addr[m_key] & 0xff, 0x07 };
-	size_t len = ARRAY_SIZE(data);
+	struct claw_mkey_report report = { {0x01, cpu_to_be16(drvdata->bmap_addr[m_key])}, 0x07 };
 	int i, ret, count = 0;
 	const char *name;
 	u8 *codes;
 
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
+
 	codes = (m_key == CLAW_KEY_M1) ? drvdata->m1_codes : drvdata->m2_codes;
 
 	guard(mutex)(&drvdata->profile_mutex);
-	drvdata->profile_pending = (m_key == CLAW_KEY_M1) ? CLAW_M1_PENDING : CLAW_M2_PENDING;
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->profile_pending = (m_key == CLAW_KEY_M1) ? CLAW_M1_PENDING
+								  : CLAW_M2_PENDING;
 
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE, data, len, 8);
-	if (ret) {
-		drvdata->profile_pending = CLAW_NO_PENDING;
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE,
+				    (u8 *)&report, sizeof(report), 25);
+	if (ret)
 		return ret;
-	}
+
 	for (i = 0; i < CLAW_KEYS_MAX; i++) {
-		name = button_mapping_code_to_name(codes[i]);
+		name = mkey_mapping_code_to_name(codes[i]);
 		if (name)
 			count += sysfs_emit_at(buf, count, "%s ", name);
 	}
@@ -789,7 +975,7 @@ static ssize_t button_m1_store(struct device *dev, struct device_attribute *attr
 {
 	int ret;
 
-	ret = claw_buttons_store(dev, buf, CLAW_KEY_M1);
+	ret = claw_mkey_store(dev, buf, CLAW_KEY_M1);
 	if (ret)
 		return ret;
 
@@ -799,7 +985,7 @@ static ssize_t button_m1_store(struct device *dev, struct device_attribute *attr
 static ssize_t button_m1_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
-	return claw_buttons_show(dev, buf, CLAW_KEY_M1);
+	return claw_mkey_show(dev, buf, CLAW_KEY_M1);
 }
 static DEVICE_ATTR_RW(button_m1);
 
@@ -808,7 +994,7 @@ static ssize_t button_m2_store(struct device *dev, struct device_attribute *attr
 {
 	int ret;
 
-	ret = claw_buttons_store(dev, buf, CLAW_KEY_M2);
+	ret = claw_mkey_store(dev, buf, CLAW_KEY_M2);
 	if (ret)
 		return ret;
 
@@ -818,7 +1004,7 @@ static ssize_t button_m2_store(struct device *dev, struct device_attribute *attr
 static ssize_t button_m2_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
-	return claw_buttons_show(dev, buf, CLAW_KEY_M2);
+	return claw_mkey_show(dev, buf, CLAW_KEY_M2);
 }
 static DEVICE_ATTR_RW(button_m2);
 
@@ -830,7 +1016,8 @@ static ssize_t button_mapping_options_show(struct device *dev,
 	for (i = 0; i < ARRAY_SIZE(claw_button_mapping_key_map); i++)
 		count += sysfs_emit_at(buf, count, "%s ", claw_button_mapping_key_map[i].name);
 
-	buf[count - 1] = '\n';
+	if (count)
+		buf[count - 1] = '\n';
 
 	return count;
 }
@@ -840,11 +1027,17 @@ static ssize_t rumble_intensity_left_store(struct device *dev,
 					   struct device_attribute *attr,
 					   const char *buf, size_t count)
 {
-	u8 data[] = { 0x01, (rumble_addr[0] >> 8) & 0xff, rumble_addr[0] & 0xff, 0x01, 0x00 };
+	struct claw_rumble_report report = { {0x01, cpu_to_be16(rumble_addr[0])}, 0x01 };
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	u8 val;
 	int ret;
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
 
 	ret = kstrtou8(buf, 10, &val);
 	if (ret)
@@ -853,19 +1046,22 @@ static ssize_t rumble_intensity_left_store(struct device *dev,
 	if (val > 100)
 		return -EINVAL;
 
-	data[4] = val;
+	report.intensity = val;
 
 	guard(mutex)(&drvdata->rom_mutex);
 	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
-				    data, ARRAY_SIZE(data), 8);
+				    (u8 *)&report, sizeof(report), 25);
 	if (ret)
 		return ret;
 
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 8);
+	/* MCU will not send ACK until the USB transaction completes. ACK is sent
+	 * immediately after and will hit the stale state machine, before the next
+	 * command re-arms the state machine. Timeout 0 ensures no deadlock waiting
+	 * for ACK that ill never come.
+	 */
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 0);
 	if (ret)
 		return ret;
-
-	drvdata->rumble_intensity_left = val;
 
 	return count;
 }
@@ -874,21 +1070,30 @@ static ssize_t rumble_intensity_left_show(struct device *dev,
 					  struct device_attribute *attr,
 					  char *buf)
 {
-	u8 data[4] = { 0x01, (rumble_addr[0] >> 8) & 0xff, rumble_addr[0] & 0xff, 0x01 };
+	struct claw_rumble_report report = { {0x01, cpu_to_be16(rumble_addr[0])}, 0x01 };
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	int ret;
+	u8 val;
 
-	guard(mutex)(&drvdata->profile_mutex);
-	drvdata->profile_pending = CLAW_RUMBLE_LEFT_PENDING;
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE, data,
-				    ARRAY_SIZE(data), 8);
-	if (ret) {
-		drvdata->profile_pending = CLAW_NO_PENDING;
-		return ret;
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
 	}
 
-	return sysfs_emit(buf, "%u\n", drvdata->rumble_intensity_left);
+	guard(mutex)(&drvdata->profile_mutex);
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->profile_pending = CLAW_RUMBLE_LEFT_PENDING;
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE,
+				    (u8 *)&report, sizeof(report), 25);
+	if (ret)
+		return ret;
+
+	scoped_guard(spinlock_irqsave, &drvdata->rumble_lock)
+		val = drvdata->rumble_intensity_left;
+
+	return sysfs_emit(buf, "%u\n", val);
 }
 static DEVICE_ATTR_RW(rumble_intensity_left);
 
@@ -896,11 +1101,17 @@ static ssize_t rumble_intensity_right_store(struct device *dev,
 					    struct device_attribute *attr,
 					    const char *buf, size_t count)
 {
-	u8 data[] = { 0x01, (rumble_addr[1] >> 8) & 0xff, rumble_addr[1] & 0xff, 0x01, 0x00 };
+	struct claw_rumble_report report = { {0x01, cpu_to_be16(rumble_addr[1])}, 0x01 };
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	u8 val;
 	int ret;
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
+	}
 
 	ret = kstrtou8(buf, 10, &val);
 	if (ret)
@@ -909,19 +1120,22 @@ static ssize_t rumble_intensity_right_store(struct device *dev,
 	if (val > 100)
 		return -EINVAL;
 
-	data[4] = val;
+	report.intensity = val;
 
 	guard(mutex)(&drvdata->rom_mutex);
 	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
-				    data, ARRAY_SIZE(data), 8);
+				    (u8 *)&report, sizeof(report), 25);
 	if (ret)
 		return ret;
 
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 8);
+	/* MCU will not send ACK until the USB transaction completes. ACK is sent
+	 * immediately after and will hit the stale state machine, before the next
+	 * command re-arms the state machine. Timeout 0 ensures no deadlock waiting
+	 * for ACK that ill never come.
+	 */
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 0);
 	if (ret)
 		return ret;
-
-	drvdata->rumble_intensity_right = val;
 
 	return count;
 }
@@ -930,21 +1144,30 @@ static ssize_t rumble_intensity_right_show(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
-	u8 data[4] = { 0x01, (rumble_addr[1] >> 8) & 0xff, rumble_addr[1] & 0xff, 0x01 };
+	struct claw_rumble_report report = { {0x01, cpu_to_be16(rumble_addr[1])}, 0x01 };
 	struct hid_device *hdev = to_hid_device(dev);
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
 	int ret;
+	u8 val;
 
-	guard(mutex)(&drvdata->profile_mutex);
-	drvdata->profile_pending = CLAW_RUMBLE_RIGHT_PENDING;
-	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE, data,
-				    ARRAY_SIZE(data), 8);
-	if (ret) {
-		drvdata->profile_pending = CLAW_NO_PENDING;
-		return ret;
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->gp_registered))
+			return -ENODEV;
 	}
 
-	return sysfs_emit(buf, "%u\n", drvdata->rumble_intensity_right);
+	guard(mutex)(&drvdata->profile_mutex);
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->profile_pending = CLAW_RUMBLE_RIGHT_PENDING;
+	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE,
+				    (u8 *)&report, sizeof(report), 25);
+	if (ret)
+		return ret;
+
+	scoped_guard(spinlock_irqsave, &drvdata->rumble_lock)
+		val = drvdata->rumble_intensity_right;
+
+	return sysfs_emit(buf, "%u\n", val);
 }
 static DEVICE_ATTR_RW(rumble_intensity_right);
 
@@ -1020,15 +1243,15 @@ static int claw_read_rgb_config(struct hid_device *hdev)
 
 	/* Loop through all 8 pages of RGB data */
 	guard(mutex)(&drvdata->profile_mutex);
-	for (i = 0; i < 8; i++) {
-		drvdata->profile_pending = CLAW_RGB_PENDING;
+	for (i = 0; i < CLAW_RGB_MAX_FRAMES; i++) {
+		scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+			drvdata->profile_pending = CLAW_RGB_PENDING;
 		data[1] = (read_addr >> 8) & 0xff;
 		data[2] = read_addr & 0x00ff;
-		ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE, data, len, 8);
-		if (ret) {
-			drvdata->profile_pending = CLAW_NO_PENDING;
+		ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_READ_PROFILE, data, len, 25);
+		if (ret)
 			return ret;
-		}
+
 		read_addr += CLAW_RGB_FRAME_OFFSET;
 	}
 
@@ -1038,11 +1261,10 @@ static int claw_read_rgb_config(struct hid_device *hdev)
 /* Send RGB configuration to device */
 static int claw_write_rgb_state(struct claw_drvdata *drvdata)
 {
-	struct rgb_report report = { 0x01, 0x0000, CLAW_RGB_FRAME_OFFSET, 0x00,
+	struct claw_rgb_report report = { {0x01, 0}, CLAW_RGB_FRAME_OFFSET, 0x00,
 			drvdata->rgb_frame_count, 0x09, drvdata->rgb_speed,
 			drvdata->led_mc.led_cdev.brightness };
 	u16 write_addr = drvdata->rgb_addr;
-	size_t len = sizeof(report);
 	int f, ret;
 
 	if (!drvdata->rgb_addr)
@@ -1054,14 +1276,15 @@ static int claw_write_rgb_state(struct claw_drvdata *drvdata)
 	guard(mutex)(&drvdata->rom_mutex);
 	/* Loop through (up to) 8 pages of RGB data */
 	for (f = 0; f < drvdata->rgb_frame_count; f++) {
-		report.zone_data = drvdata->rgb_frames[f];
+		scoped_guard(spinlock_irqsave, &drvdata->frame_lock)
+			report.zone_data = drvdata->rgb_frames[f];
 
 		/* Set the MCU address to write the frame data to */
 		report.read_addr = cpu_to_be16(write_addr);
 
 		/* Serialize the rgb_report and write it to MCU */
 		ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
-					    (u8 *)&report, len, 8);
+					    (u8 *)&report, sizeof(report), 25);
 		if (ret)
 			return ret;
 
@@ -1069,7 +1292,12 @@ static int claw_write_rgb_state(struct claw_drvdata *drvdata)
 		write_addr += CLAW_RGB_FRAME_OFFSET;
 	}
 
-	ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 8);
+	/* MCU will not send ACK until the USB transaction completes. ACK is sent
+	 * immediately after and will hit the stale state machine, before the next
+	 * command re-arms the state machine. Timeout 0 ensures no deadlock waiting
+	 * for ACK that ill never come.
+	 */
+	ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 0);
 
 	return ret;
 }
@@ -1083,6 +1311,19 @@ static void claw_frame_fill_solid(struct rgb_frame *frame, struct rgb_zone zone)
 		frame->zone[z] = zone;
 }
 
+/* Apply solid effect (1 frame, no color) */
+static int claw_apply_disabled(struct claw_drvdata *drvdata)
+{
+	struct rgb_zone off = { 0x00, 0x00, 0x00};
+
+	scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
+		drvdata->rgb_frame_count = 1;
+		claw_frame_fill_solid(&drvdata->rgb_frames[0], off);
+	}
+
+	return claw_write_rgb_state(drvdata);
+}
+
 /* Apply solid effect (1 frame, all zones same color) */
 static int claw_apply_monocolor(struct claw_drvdata *drvdata)
 {
@@ -1090,9 +1331,10 @@ static int claw_apply_monocolor(struct claw_drvdata *drvdata)
 	struct rgb_zone zone = { subleds[0].intensity, subleds[1].intensity,
 				 subleds[2].intensity };
 
-	guard(spinlock)(&drvdata->frame_lock);
-	drvdata->rgb_frame_count = 1;
-	claw_frame_fill_solid(&drvdata->rgb_frames[0], zone);
+	scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
+		drvdata->rgb_frame_count = 1;
+		claw_frame_fill_solid(&drvdata->rgb_frames[0], zone);
+	}
 
 	return claw_write_rgb_state(drvdata);
 }
@@ -1105,10 +1347,11 @@ static int claw_apply_breathe(struct claw_drvdata *drvdata)
 				 subleds[2].intensity };
 	static const struct rgb_zone off = { 0, 0, 0 };
 
-	guard(spinlock)(&drvdata->frame_lock);
-	drvdata->rgb_frame_count = 2;
-	claw_frame_fill_solid(&drvdata->rgb_frames[0], zone);
-	claw_frame_fill_solid(&drvdata->rgb_frames[1], off);
+	scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
+		drvdata->rgb_frame_count = 2;
+		claw_frame_fill_solid(&drvdata->rgb_frames[0], zone);
+		claw_frame_fill_solid(&drvdata->rgb_frames[1], off);
+	}
 
 	return claw_write_rgb_state(drvdata);
 }
@@ -1125,13 +1368,14 @@ static int claw_apply_chroma(struct claw_drvdata *drvdata)
 		{255,   0, 255},  /* magenta */
 	};
 	u8 frame_count = ARRAY_SIZE(colors);
-	int frame;
+	int f;
 
-	guard(spinlock)(&drvdata->frame_lock);
-	drvdata->rgb_frame_count = frame_count;
+	scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
+		drvdata->rgb_frame_count = frame_count;
 
-	for (frame = 0; frame < frame_count; frame++)
-		claw_frame_fill_solid(&drvdata->rgb_frames[frame], colors[frame]);
+		for (f = 0; f < frame_count; f++)
+			claw_frame_fill_solid(&drvdata->rgb_frames[f], colors[f]);
+	}
 
 	return claw_write_rgb_state(drvdata);
 }
@@ -1146,17 +1390,18 @@ static int claw_apply_rainbow(struct claw_drvdata *drvdata)
 		{  0,   0, 255},  /* blue  */
 	};
 	u8 frame_count = ARRAY_SIZE(colors);
-	int frame, zone;
+	int f, z;
 
-	guard(spinlock)(&drvdata->frame_lock);
-	drvdata->rgb_frame_count = frame_count;
+	scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
+		drvdata->rgb_frame_count = frame_count;
 
-	for (frame = 0; frame < frame_count; frame++) {
-		for (zone = 0; zone < 4; zone++) {
-			drvdata->rgb_frames[frame].zone[zone]     = colors[(zone + frame) % 4];
-			drvdata->rgb_frames[frame].zone[zone + 4] = colors[(zone + frame) % 4];
+		for (f = 0; f < frame_count; f++) {
+			for (z = 0; z < 4; z++) {
+				drvdata->rgb_frames[f].zone[z]     = colors[(z + f) % 4];
+				drvdata->rgb_frames[f].zone[z + 4] = colors[(z + f) % 4];
+			}
+			drvdata->rgb_frames[f].zone[8] = colors[f];
 		}
-		drvdata->rgb_frames[frame].zone[8] = colors[frame];
 	}
 
 	return claw_write_rgb_state(drvdata);
@@ -1177,17 +1422,18 @@ static int claw_apply_frostfire(struct claw_drvdata *drvdata)
 		{  0,   0,   0},  /* dark     */
 	};
 	u8 frame_count = ARRAY_SIZE(colors);
-	int frame, zone;
+	int f, z;
 
-	guard(spinlock)(&drvdata->frame_lock);
-	drvdata->rgb_frame_count = frame_count;
+	scoped_guard(spinlock_irqsave, &drvdata->frame_lock) {
+		drvdata->rgb_frame_count = frame_count;
 
-	for (frame = 0; frame < frame_count; frame++) {
-		for (zone = 0; zone < 4; zone++) {
-			drvdata->rgb_frames[frame].zone[zone]     = colors[(zone + frame) % 4];
-			drvdata->rgb_frames[frame].zone[zone + 4] = colors[(zone - frame + 6) % 4];
+		for (f = 0; f < frame_count; f++) {
+			for (z = 0; z < 4; z++) {
+				drvdata->rgb_frames[f].zone[z]     = colors[(z + f) % 4];
+				drvdata->rgb_frames[f].zone[z + 4] = colors[(z - f + 6) % 4];
+			}
+			drvdata->rgb_frames[f].zone[8] = colors[f];
 		}
-		drvdata->rgb_frames[frame].zone[8] = colors[frame];
 	}
 
 	return claw_write_rgb_state(drvdata);
@@ -1196,14 +1442,8 @@ static int claw_apply_frostfire(struct claw_drvdata *drvdata)
 /* Apply current state to device */
 static int claw_apply_rgb_state(struct claw_drvdata *drvdata)
 {
-	static const struct rgb_zone off = { 0, 0, 0 };
-
-	if (!drvdata->rgb_enabled) {
-		guard(spinlock)(&drvdata->frame_lock);
-		drvdata->rgb_frame_count = 1;
-		claw_frame_fill_solid(&drvdata->rgb_frames[0], off);
-		return claw_write_rgb_state(drvdata);
-	}
+	if (!drvdata->rgb_enabled)
+		return claw_apply_disabled(drvdata);
 
 	switch (drvdata->rgb_effect) {
 	case CLAW_RGB_EFFECT_MONOCOLOR:
@@ -1217,8 +1457,7 @@ static int claw_apply_rgb_state(struct claw_drvdata *drvdata)
 	case CLAW_RGB_EFFECT_FROSTFIRE:
 		return claw_apply_frostfire(drvdata);
 	default:
-		dev_err(drvdata->led_mc.led_cdev.dev,
-			"No supported rgb_effect selected\n");
+		dev_err(&drvdata->hdev->dev, "No supported rgb_effect selected\n");
 		return -EINVAL;
 	}
 }
@@ -1229,10 +1468,18 @@ static void claw_rgb_queue_fn(struct work_struct *work)
 	struct claw_drvdata *drvdata = container_of(dwork, struct claw_drvdata, rgb_queue);
 	int ret;
 
+	if (!drvdata)
+		return;
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return;
+	}
+
 	ret = claw_apply_rgb_state(drvdata);
 	if (ret)
-		dev_err(drvdata->led_mc.led_cdev.dev,
-			"Failed to apply RGB state: %d\n", ret);
+		dev_err(&drvdata->hdev->dev, "Failed to apply RGB state: %d\n", ret);
 }
 
 static ssize_t effect_store(struct device *dev,
@@ -1244,11 +1491,19 @@ static ssize_t effect_store(struct device *dev,
 	struct claw_drvdata *drvdata = container_of(led_mc, struct claw_drvdata, led_mc);
 	int ret;
 
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return -ENODEV;
+	}
+
 	ret = sysfs_match_string(claw_rgb_effect_text, buf);
 	if (ret < 0)
 		return ret;
 
-	drvdata->rgb_effect = ret;
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->rgb_effect = ret;
+
 	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
 
 	return count;
@@ -1260,6 +1515,12 @@ static ssize_t effect_show(struct device *dev,
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct led_classdev_mc *led_mc = container_of(led_cdev, struct led_classdev_mc, led_cdev);
 	struct claw_drvdata *drvdata = container_of(led_mc, struct claw_drvdata, led_mc);
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return -ENODEV;
+	}
 
 	if (drvdata->rgb_effect >= ARRAY_SIZE(claw_rgb_effect_text))
 		return -EINVAL;
@@ -1294,11 +1555,19 @@ static ssize_t enabled_store(struct device *dev,
 	bool val;
 	int ret;
 
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return -ENODEV;
+	}
+
 	ret = kstrtobool(buf, &val);
 	if (ret)
 		return ret;
 
-	drvdata->rgb_enabled = val;
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->rgb_enabled = val;
+
 	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
 
 	return count;
@@ -1310,6 +1579,12 @@ static ssize_t enabled_show(struct device *dev,
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct led_classdev_mc *led_mc = container_of(led_cdev, struct led_classdev_mc, led_cdev);
 	struct claw_drvdata *drvdata = container_of(led_mc, struct claw_drvdata, led_mc);
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return -ENODEV;
+	}
 
 	return sysfs_emit(buf, "%s\n", drvdata->rgb_enabled ? "true" : "false");
 }
@@ -1331,6 +1606,12 @@ static ssize_t speed_store(struct device *dev, struct device_attribute *attr,
 	unsigned int val, speed;
 	int ret;
 
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return -ENODEV;
+	}
+
 	ret = kstrtouint(buf, 10, &val);
 	if (ret)
 		return ret;
@@ -1341,7 +1622,9 @@ static ssize_t speed_store(struct device *dev, struct device_attribute *attr,
 	/* 0 is fastest, invert value for intuitive userspace speed */
 	speed = 20 - val;
 
-	drvdata->rgb_speed = speed;
+	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
+		drvdata->rgb_speed = speed;
+
 	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
 
 	return count;
@@ -1354,6 +1637,12 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 	struct led_classdev_mc *led_mc = container_of(led_cdev, struct led_classdev_mc, led_cdev);
 	struct claw_drvdata *drvdata = container_of(led_mc, struct claw_drvdata, led_mc);
 	u8 speed = 20 - drvdata->rgb_speed;
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return -ENODEV;
+	}
 
 	return sysfs_emit(buf, "%u\n", speed);
 }
@@ -1371,6 +1660,12 @@ static void claw_led_brightness_set(struct led_classdev *led_cdev,
 {
 	struct led_classdev_mc *led_mc = container_of(led_cdev, struct led_classdev_mc, led_cdev);
 	struct claw_drvdata *drvdata = container_of(led_mc, struct claw_drvdata, led_mc);
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		if (!smp_load_acquire(&drvdata->rgb_registered))
+			return;
+	}
 
 	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
 }
@@ -1408,56 +1703,94 @@ static void cfg_setup_fn(struct work_struct *work)
 {
 	struct delayed_work *dwork = container_of(work, struct delayed_work, work);
 	struct claw_drvdata *drvdata = container_of(dwork, struct claw_drvdata, cfg_setup);
+	bool gamepad_ready = false, rgb_ready = false, gp_registered, rgb_registered;
 	int ret;
 
-	ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE, NULL, 0, 8);
+	ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_READ_GAMEPAD_MODE,
+				    NULL, 0, 25);
 	if (ret) {
 		dev_err(&drvdata->hdev->dev,
-			"Failed to setup device, can't read gamepad mode: %d\n", ret);
-		return;
+			"Failed to read gamepad mode: %d\n", ret);
+		goto prep_rgb;
 	}
+	gamepad_ready = true;
 
+prep_rgb:
 	ret = claw_read_rgb_config(drvdata->hdev);
 	if (ret) {
-		dev_err(drvdata->led_mc.led_cdev.dev,
-			"Failed to setup device, can't read RGB config: %d\n", ret);
-		return;
+		dev_err(&drvdata->hdev->dev,
+			"Failed to read RGB config: %d\n", ret);
+		goto try_gamepad;
 	}
+	rgb_ready = true;
 
 	/* Add sysfs attributes after we get the device state */
-	ret = device_add_group(&drvdata->hdev->dev, &claw_gamepad_attr_group);
-	if (ret) {
-		dev_err(&drvdata->hdev->dev,
-			"Failed to setup device, can't create gamepad attrs: %d\n", ret);
-		return;
+try_gamepad:
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock)
+		/* Pairs with smp_store_release from below */
+		gp_registered = smp_load_acquire(&drvdata->gp_registered);
+
+	if (!gp_registered && gamepad_ready) {
+		ret = device_add_group(&drvdata->hdev->dev, &claw_gamepad_attr_group);
+		if (ret) {
+			dev_err(&drvdata->hdev->dev,
+				"Failed to create gamepad attrs: %d\n", ret);
+			goto try_rgb;
+		}
+
+		scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+			/* Pairs with smp_load_acquire in attribute show/store functions */
+			smp_store_release(&drvdata->gp_registered, true);
+			gp_registered = true;
+		}
 	}
 
-	ret = device_add_group(drvdata->led_mc.led_cdev.dev, &claw_rgb_attr_group);
-	if (ret) {
-		dev_err(&drvdata->hdev->dev,
-			"Failed to setup device, can't create led attributes: %d\n", ret);
-		return;
+try_rgb:
+	/* Add and enable RGB interface once we have the device state */
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock)
+		/* Pairs with smp_store_release from below */
+		rgb_registered = smp_load_acquire(&drvdata->rgb_registered);
+
+	if (!rgb_registered && rgb_ready) {
+		ret = led_classdev_multicolor_register(&drvdata->hdev->dev,
+						       &drvdata->led_mc);
+		if (ret) {
+			dev_err(&drvdata->hdev->dev, "Failed to create led device: %d\n", ret);
+			goto update_kobjects;
+		}
+
+		ret = device_add_group(drvdata->led_mc.led_cdev.dev, &claw_rgb_attr_group);
+		if (ret) {
+			dev_err(&drvdata->hdev->dev, "Failed to create RGB attrs: %d\n", ret);
+			led_classdev_multicolor_unregister(&drvdata->led_mc);
+			goto update_kobjects;
+		}
+
+		scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+			/* Pairs with smp_load_acquire in attribute show/store functions */
+			smp_store_release(&drvdata->rgb_registered, true);
+			rgb_registered = true;
+		}
 	}
 
-	kobject_uevent(&drvdata->hdev->dev.kobj, KOBJ_CHANGE);
-	kobject_uevent(&drvdata->led_mc.led_cdev.dev->kobj, KOBJ_CHANGE);
+update_kobjects:
+	if (gp_registered)
+		kobject_uevent(&drvdata->hdev->dev.kobj, KOBJ_CHANGE);
+	if (rgb_registered)
+		kobject_uevent(&drvdata->led_mc.led_cdev.dev->kobj, KOBJ_CHANGE);
 }
 
 static void cfg_resume_fn(struct work_struct *work)
 {
 	struct delayed_work *dwork = container_of(work, struct delayed_work, work);
 	struct claw_drvdata *drvdata = container_of(dwork, struct claw_drvdata, cfg_resume);
-	u8 data[2] = { drvdata->gamepad_mode, drvdata->mkeys_function };
-	int ret;
 
-	ret = claw_read_rgb_config(drvdata->hdev);
-	if (ret)
-		dev_err(drvdata->led_mc.led_cdev.dev, "Failed to read RGB config: %d\n", ret);
-
-	ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_SWITCH_MODE, data,
-				    ARRAY_SIZE(data), 0);
-	if (ret)
-		dev_err(&drvdata->hdev->dev, "Failed to set gamepad mode settings: %d\n", ret);
+	guard(spinlock_irqsave)(&drvdata->registration_lock);
+	    /* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+	if (!smp_load_acquire(&drvdata->gp_registered) ||
+	    /* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+	    !smp_load_acquire(&drvdata->rgb_registered))
+		schedule_delayed_work(&drvdata->cfg_setup, msecs_to_jiffies(500));
 }
 
 static void claw_features_supported(struct claw_drvdata *drvdata)
@@ -1512,6 +1845,7 @@ static int claw_probe(struct hid_device *hdev, u8 ep)
 	if (!drvdata->bmap_support)
 		dev_dbg(&hdev->dev, "M-Key mapping is not supported. Update firmware to enable.\n");
 
+	/* Device is hardwired and name is guaranteed to be unique */
 	drvdata->led_mc.led_cdev.name = "go:rgb:joystick_rings";
 	drvdata->led_mc.led_cdev.brightness = 0x50;
 	drvdata->led_mc.led_cdev.max_brightness = 0x64;
@@ -1526,14 +1860,17 @@ static int claw_probe(struct hid_device *hdev, u8 ep)
 	mutex_init(&drvdata->cfg_mutex);
 	mutex_init(&drvdata->profile_mutex);
 	mutex_init(&drvdata->rom_mutex);
+	spin_lock_init(&drvdata->registration_lock);
+	spin_lock_init(&drvdata->cmd_lock);
+	spin_lock_init(&drvdata->mode_lock);
+	spin_lock_init(&drvdata->profile_lock);
+	spin_lock_init(&drvdata->frame_lock);
+	spin_lock_init(&drvdata->rumble_lock);
+	init_completion(&drvdata->orphan_ack_complete);
 	init_completion(&drvdata->send_cmd_complete);
 	INIT_DELAYED_WORK(&drvdata->cfg_resume, &cfg_resume_fn);
 	INIT_DELAYED_WORK(&drvdata->cfg_setup, &cfg_setup_fn);
 	INIT_DELAYED_WORK(&drvdata->rgb_queue, &claw_rgb_queue_fn);
-
-	ret = devm_led_classdev_multicolor_register(&hdev->dev, &drvdata->led_mc);
-	if (ret)
-		return ret;
 
 	/* For control interface: open the HID transport for sending commands. */
 	ret = hid_hw_open(hdev);
@@ -1589,21 +1926,35 @@ err_probe:
 static void claw_remove(struct hid_device *hdev)
 {
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
+	bool gp_registered;
+	bool rgb_registered;
 
-	if (!drvdata) {
-		hid_hw_stop(hdev);
+	if (!drvdata)
 		return;
+
+	cancel_delayed_work_sync(&drvdata->cfg_resume);
+	cancel_delayed_work_sync(&drvdata->cfg_setup);
+
+	scoped_guard(spinlock_irqsave, &drvdata->registration_lock) {
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		gp_registered = smp_load_acquire(&drvdata->gp_registered);
+		/* Pairs with smp_load_acquire in attribute show/store functions */
+		smp_store_release(&drvdata->gp_registered, false);
+		/* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
+		rgb_registered = smp_load_acquire(&drvdata->rgb_registered);
+		/* Pairs with smp_load_acquire in attribute show/store functions */
+		smp_store_release(&drvdata->rgb_registered, false);
 	}
 
-	/* Block writes to brightness/multi_intensity during teardown */
-	drvdata->led_mc.led_cdev.brightness_set = NULL;
-	cancel_delayed_work_sync(&drvdata->cfg_setup);
-	cancel_delayed_work_sync(&drvdata->cfg_resume);
+	if (gp_registered)
+		device_remove_group(&hdev->dev, &claw_gamepad_attr_group);
+
+	if (rgb_registered) {
+		device_remove_group(drvdata->led_mc.led_cdev.dev, &claw_rgb_attr_group);
+		led_classdev_multicolor_unregister(&drvdata->led_mc);
+	}
 	cancel_delayed_work_sync(&drvdata->rgb_queue);
 
-	guard(mutex)(&drvdata->cfg_mutex);
-	device_remove_group(drvdata->led_mc.led_cdev.dev, &claw_rgb_attr_group);
-	device_remove_group(&hdev->dev, &claw_gamepad_attr_group);
 	hid_hw_close(hdev);
 }
 
@@ -1612,6 +1963,7 @@ static void msi_remove(struct hid_device *hdev)
 	int ret;
 	u8 ep;
 
+	/* Safe assumption. SET_INTERFACE ioctl can't be used while driver is bound */
 	ret = get_endpoint_address(hdev);
 	if (ret <= 0)
 		goto hw_stop;
@@ -1641,6 +1993,7 @@ static int msi_resume(struct hid_device *hdev)
 	int ret;
 	u8 ep;
 
+	/* Safe assumption. SET_INTERFACE ioctl can't be used while driver is bound */
 	ret = get_endpoint_address(hdev);
 	if (ret <= 0)
 		return 0;
@@ -1659,8 +2012,8 @@ static int claw_suspend(struct hid_device *hdev)
 	if (!drvdata)
 		return -ENODEV;
 
-	cancel_delayed_work_sync(&drvdata->cfg_setup);
 	cancel_delayed_work_sync(&drvdata->cfg_resume);
+	cancel_delayed_work_sync(&drvdata->cfg_setup);
 	cancel_delayed_work_sync(&drvdata->rgb_queue);
 
 	return 0;
@@ -1671,6 +2024,7 @@ static int msi_suspend(struct hid_device *hdev, pm_message_t msg)
 	int ret;
 	u8 ep;
 
+	/* Safe assumption. SET_INTERFACE ioctl can't be used while driver is bound */
 	ret = get_endpoint_address(hdev);
 	if (ret <= 0)
 		return 0;
@@ -1697,7 +2051,7 @@ static struct hid_driver msi_driver = {
 	.raw_event	= msi_raw_event,
 	.probe		= msi_probe,
 	.remove		= msi_remove,
-	.resume		= msi_resume,
+	.resume		= pm_ptr(msi_resume),
 	.suspend	= pm_ptr(msi_suspend),
 };
 module_hid_driver(msi_driver);

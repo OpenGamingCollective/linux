@@ -488,6 +488,7 @@ config HID_GT683R
 config HID_MSI
 	tristate "MSI Claw Gamepad Support"
 	depends on USB_HID
+	select NEW_LEDS
 	select LEDS_CLASS
 	select LEDS_CLASS_MULTICOLOR
 	help
