@@ -128,10 +128,10 @@ static ssize_t pending_reboot_show(struct kobject *kobj, struct kobj_attribute *
 
 static struct kobj_attribute pending_reboot = __ATTR_RO(pending_reboot);
 
-static bool asus_bios_requires_reboot(struct kobj_attribute *attr)
+static bool asus_bios_requires_reboot(const char *fsname)
 {
-	return !strcmp(attr->attr.name, "gpu_mux_mode") ||
-	       !strcmp(attr->attr.name, "panel_hd_mode");
+	return !strcmp(fsname, "gpu_mux_mode") ||
+	       !strcmp(fsname, "panel_hd_mode");
 }
 
 /**
@@ -315,7 +315,7 @@ ssize_t armoury_attr_uint_store(struct kobject *kobj, struct kobj_attribute *att
 		*store_value = value;
 	sysfs_notify(kobj, fsname, attr->attr.name);
 
-	if (asus_bios_requires_reboot(attr))
+	if (asus_bios_requires_reboot(fsname))
 		asus_set_reboot_and_signal_event();
 
 	return count;
