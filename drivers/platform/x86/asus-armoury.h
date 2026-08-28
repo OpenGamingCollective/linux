@@ -25,6 +25,7 @@
  * @max: Maximum accepted value. Above this returns -EINVAL.
  * @store_value: Pointer to where the parsed value should be stored.
  * @wmi_dev: The WMI function ID to use.
+ * @fsname: The name of the attribute's group directory, for sysfs_notify().
  *
  * This function is intended to be generic so it can be called from any "_store"
  * attribute which works only with integers.
@@ -40,7 +41,7 @@
  */
 ssize_t armoury_attr_uint_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t count, u32 min, u32 max,
-				u32 *store_value, u32 wmi_dev);
+				u32 *store_value, u32 wmi_dev, const char *fsname);
 
 /**
  * armoury_attr_uint_show() - Receive an uint from a WMI method.
@@ -72,13 +73,13 @@ ssize_t armoury_attr_uint_show(struct kobject *kobj, struct kobj_attribute *attr
 #define __ASUS_ATTR_RW(_func, _name) \
 	__ATTR(_name, 0644, _func##_##_name##_show, _func##_##_name##_store)
 
-#define __WMI_STORE_INT(_attr, _min, _max, _wmi)				\
+#define __WMI_STORE_INT(_attr, _min, _max, _wmi, _fsname)			\
 	static ssize_t _attr##_store(struct kobject *kobj,			\
 				     struct kobj_attribute *attr,		\
 				     const char *buf, size_t count)		\
 	{									\
 		return armoury_attr_uint_store(kobj, attr, buf, count, _min,	\
-					_max, NULL, _wmi);			\
+					_max, NULL, _wmi, _fsname);		\
 	}
 
 #define ASUS_WMI_SHOW_INT(_attr, _wmi)						\
@@ -121,7 +122,8 @@ ssize_t armoury_attr_uint_show(struct kobject *kobj, struct kobj_attribute *attr
 
 #define __ATTR_RW_INT_GROUP_ENUM(_attrname, _minv, _maxv, _wmi, _fsname,\
 				 _possible, _dispname)			\
-	__WMI_STORE_INT(_attrname##_current_value, _minv, _maxv, _wmi);	\
+	__WMI_STORE_INT(_attrname##_current_value, _minv, _maxv, _wmi,	\
+			_fsname);					\
 	ASUS_WMI_SHOW_INT(_attrname##_current_value, _wmi);	\
 	static struct kobj_attribute attr_##_attrname##_current_value =	\
 		__ASUS_ATTR_RW(_attrname, current_value);		\
@@ -251,7 +253,7 @@ ssize_t armoury_attr_uint_show(struct kobject *kobj, struct kobj_attribute *attr
 	static struct kobj_attribute attr_##_attrname##_default_value =		\
 		__ASUS_ATTR_RO(_attrname, default_value)
 
-#define __ROG_TUNABLE_RW(_attr, _wmi)						\
+#define __ROG_TUNABLE_RW(_attr, _wmi, _fsname)					\
 	static ssize_t _attr##_current_value_store(				\
 		struct kobject *kobj, struct kobj_attribute *attr,		\
 		const char *buf, size_t count)					\
@@ -268,7 +270,7 @@ ssize_t armoury_attr_uint_show(struct kobject *kobj, struct kobj_attribute *attr
 		return armoury_attr_uint_store(kobj, attr, buf, count,		\
 				       tunables->power_limits->_attr##_min,	\
 				       tunables->power_limits->_attr##_max,	\
-				       &tunables->_attr, _wmi);			\
+				       &tunables->_attr, _wmi, _fsname);	\
 	}									\
 	static ssize_t _attr##_current_value_show(				\
 		struct kobject *kobj, struct kobj_attribute *attr, char *buf)	\
@@ -284,7 +286,7 @@ ssize_t armoury_attr_uint_show(struct kobject *kobj, struct kobj_attribute *attr
 		__ASUS_ATTR_RW(_attr, current_value)
 
 #define ASUS_ATTR_GROUP_ROG_TUNABLE(_attrname, _fsname, _wmi, _dispname)	\
-	__ROG_TUNABLE_RW(_attrname, _wmi);				\
+	__ROG_TUNABLE_RW(_attrname, _wmi, _fsname);			\
 	__ROG_TUNABLE_SHOW_DEFAULT(_attrname);				\
 	__ROG_TUNABLE_SHOW(min_value, _attrname, _attrname##_min);	\
 	__ROG_TUNABLE_SHOW(max_value, _attrname, _attrname##_max);	\
