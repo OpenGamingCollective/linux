@@ -294,7 +294,7 @@ static int armoury_attr_enum_list(char *buf, size_t enum_values)
 
 ssize_t armoury_attr_uint_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t count, u32 min, u32 max,
-				u32 *store_value, u32 wmi_dev)
+				u32 *store_value, u32 wmi_dev, const char *fsname)
 {
 	u32 value;
 	int err;
@@ -312,7 +312,7 @@ ssize_t armoury_attr_uint_store(struct kobject *kobj, struct kobj_attribute *att
 
 	if (store_value != NULL)
 		*store_value = value;
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, fsname, attr->attr.name);
 
 	if (asus_bios_requires_reboot(attr))
 		asus_set_reboot_and_signal_event();
@@ -442,7 +442,8 @@ static ssize_t mini_led_mode_current_value_store(struct kobject *kobj,
 
 	return armoury_attr_uint_store(kobj, attr, mapped_value, count, 0,
 				       mini_led_mode_map[mode], NULL,
-				       asus_armoury.mini_led_dev_id);
+				       asus_armoury.mini_led_dev_id,
+				       "mini_led_mode");
 }
 
 static ssize_t mini_led_mode_possible_values_show(struct kobject *kobj,
@@ -495,7 +496,7 @@ static ssize_t gpu_mux_mode_current_value_store(struct kobject *kobj,
 	if (err)
 		return err;
 
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "gpu_mux_mode", attr->attr.name);
 	asus_set_reboot_and_signal_event();
 
 	return count;
@@ -530,7 +531,7 @@ static ssize_t dgpu_disable_current_value_store(struct kobject *kobj,
 			return err;
 	}
 
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "dgpu_disable", attr->attr.name);
 
 	return count;
 }
@@ -652,7 +653,7 @@ static ssize_t egpu_enable_current_value_store(struct kobject *kobj, struct kobj
 	 */
 	armoury_pci_rescan();
 
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "egpu_enable", attr->attr.name);
 
 	return count;
 }
@@ -746,7 +747,7 @@ static ssize_t apu_mem_current_value_store(struct kobject *kobj, struct kobj_att
 	}
 
 	pr_info("APU memory changed to %uGB, reboot required\n", requested + 1);
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "apu_mem", attr->attr.name);
 
 	asus_set_reboot_and_signal_event();
 
