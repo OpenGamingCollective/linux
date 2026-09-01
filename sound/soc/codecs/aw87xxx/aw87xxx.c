@@ -71,7 +71,16 @@ unsigned int g_aw87xxx_dev_cnt = 0;
 static const char *const aw87xxx_monitor_switch[] = {"Disable", "Enable"};
 static const char *const aw87xxx_spin_switch[] = {"spin_0", "spin_90",
 					 "spin_180", "spin_270"};
-#ifdef AW_KERNEL_VER_OVER_4_19_1
+#if defined(AW_KERNEL_VER_OVER_6_16_1)
+static void new_snd_soc_unregister_component(struct device *dev)
+{
+	return snd_soc_unregister_component_by_driver(dev, NULL);
+}
+static struct aw_componet_codec_ops aw_componet_codec_ops = {
+	.add_codec_controls = snd_soc_add_component_controls,
+	.unregister_codec = new_snd_soc_unregister_component,
+};
+#elif defined(AW_KERNEL_VER_OVER_4_19_1)
 static struct aw_componet_codec_ops aw_componet_codec_ops = {
 	.add_codec_controls = snd_soc_add_component_controls,
 	.unregister_codec = snd_soc_unregister_component,
