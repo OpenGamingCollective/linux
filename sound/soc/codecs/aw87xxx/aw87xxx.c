@@ -1418,7 +1418,13 @@ static int aw87xxx_i2c_probe(struct i2c_client *client)
 	        aw87xxx->aw_dev.hwen_status = AW_DEV_HWEN_OFF;
 	        AW_DEV_LOGI(aw87xxx->dev, "reset gpio[%x] parse succeed", aw87xxx->aw_dev.rst_gpio);
 
-		if (!gpio_is_valid(aw87xxx->aw_dev.rst_gpio)) {
+		if (gpio_is_valid(aw87xxx->aw_dev.rst_gpio)) {
+			ret = devm_gpio_request_one(aw87xxx->dev, aw87xxx->aw_dev.rst_gpio, GPIOF_OUT_INIT_LOW, "aw87xxx_reset");
+			if ((ret < 0) && (ret != -EBUSY)) {
+					AW_DEV_LOGE(aw87xxx->dev, "reset request failed, returned [%d]", ret);
+					goto exit_device_init_failed;
+			}
+		}else{
 			/*Disabling RESET GPIO*/
 	        	AW_DEV_LOGI(aw87xxx->dev, "no reset gpio provided, hardware reset unavailable");
 	        	aw87xxx->aw_dev.rst_gpio = AW_NO_RESET_GPIO;
