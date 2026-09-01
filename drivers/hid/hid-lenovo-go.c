@@ -2388,8 +2388,6 @@ static int hid_go_cfg_probe(struct hid_device *hdev,
 
 	drvdata.led_cdev = &go_cdev_rgb.led_cdev;
 
-	init_completion(&drvdata.send_cmd_complete);
-
 	/* Executing calls prior to returning from probe will lock the MCU. Schedule
 	 * initial data call after probe has completed and MCU can accept calls.
 	 */
@@ -2436,6 +2434,10 @@ static int hid_go_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
+	ep = get_endpoint_address(hdev);
+	if (ep == GO_GP_INTF_IN)
+		init_completion(&drvdata.send_cmd_complete);
+
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 	if (ret) {
 		hid_err(hdev, "Failed to start HID device\n");
@@ -2449,7 +2451,6 @@ static int hid_go_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
-	ep = get_endpoint_address(hdev);
 	if (ep != GO_GP_INTF_IN) {
 		dev_dbg(&hdev->dev, "Started interface %x as generic HID device\n", ep);
 		return 0;
