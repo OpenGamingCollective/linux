@@ -1412,20 +1412,18 @@ static ssize_t calibrate_config_store(struct device *dev,
 				      const char *buf, u8 cmd, u8 sub_cmd,
 				      size_t count, enum dev_type device_type)
 {
-	size_t size = 1;
-	u8 val = 0;
+	u8 val;
 	int ret;
 
 	ret = sysfs_match_string(cal_enabled_text, buf);
 	if (ret < 0)
 		return ret;
+	if (ret == CAL_UNKNOWN)
+		return -EINVAL;
 
 	val = ret;
-	if (!val)
-		size = 0;
-
 	ret = mcu_property_out(drvdata.hdev, MCU_CONFIG_DATA, cmd, sub_cmd,
-			       device_type, &val, size);
+			       device_type, &val, sizeof(val));
 	if (ret < 0)
 		return ret;
 
