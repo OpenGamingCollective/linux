@@ -21,6 +21,7 @@
 #include <linux/led-class-multicolor.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
+#include <linux/spinlock.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/unaligned.h>
@@ -31,13 +32,27 @@
 #include "hid-ids.h"
 
 #define GO_GP_INTF_IN		0x83
+#define GO_INPUT_REPORT_ID	0x04
 #define GO_OUTPUT_REPORT_ID	0x05
 #define GO_GP_RESET_SUCCESS	0x01
 #define GO_PACKET_SIZE		64
+#define GO_COMMAND_TIMEOUT_MS	50
+
+/* Lenovo replies identify a command and a sub-command, but have no sequence. */
+struct hid_go_cmd {
+	struct completion done;
+	spinlock_t lock; /* protects fields below */
+	bool pending;
+	u8 id;
+	u8 command;
+	u8 sub_command;
+	u8 device;
+	int result;
+};
 
 static struct hid_go_cfg {
 	struct delayed_work go_cfg_setup;
-	struct completion send_cmd_complete;
+	struct hid_go_cmd cmd;
 	struct led_classdev *led_cdev;
 	struct hid_device *hdev;
 	struct mutex cfg_mutex; /*ensure single synchronous output report*/
@@ -330,6 +345,62 @@ static const char *const os_mode_text[] = {
 	[WINDOWS] = "windows",
 	[LINUX] = "linux",
 };
+
+static void hid_go_cmd_arm(u8 id, u8 command, u8 sub_command, u8 device)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	reinit_completion(&drvdata.cmd.done);
+	drvdata.cmd.pending = true;
+	drvdata.cmd.id = id;
+	drvdata.cmd.command = command;
+	drvdata.cmd.sub_command = sub_command;
+	drvdata.cmd.device = device;
+}
+
+static void hid_go_cmd_consume(const struct command_report *cmd_rep, int result)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	if (drvdata.cmd.pending && cmd_rep->id == drvdata.cmd.id &&
+	    cmd_rep->cmd == drvdata.cmd.command &&
+	    cmd_rep->sub_cmd == drvdata.cmd.sub_command &&
+	    cmd_rep->device_type == drvdata.cmd.device) {
+		drvdata.cmd.pending = false;
+		drvdata.cmd.result = result;
+		complete(&drvdata.cmd.done);
+	}
+}
+
+static int hid_go_cmd_finish(long wait_result)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	if (wait_result <= 0) {
+		drvdata.cmd.pending = false;
+		return wait_result < 0 ? wait_result : -ETIMEDOUT;
+	}
+
+	return drvdata.cmd.result;
+}
+
+static int hid_go_cmd_cancel(int result)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	drvdata.cmd.pending = false;
+	return result;
+}
+
+static int hid_go_send_output_report(struct hid_device *hdev, u8 *packet)
+{
+	int ret;
+
+	ret = hid_hw_output_report(hdev, packet, GO_PACKET_SIZE);
+	if (ret < 0)
+		return ret;
+	return ret == GO_PACKET_SIZE ? 0 : -EINVAL;
+}
 
 static int hid_go_version_event(struct command_report *cmd_rep)
 {
@@ -654,7 +725,7 @@ static int hid_go_raw_event(struct hid_device *hdev, struct hid_report *report,
 	struct command_report *cmd_rep;
 	int ep, ret;
 
-	if (size != GO_PACKET_SIZE)
+	if (size != GO_PACKET_SIZE || data[0] != GO_INPUT_REPORT_ID)
 		goto passthrough;
 
 	ep = get_endpoint_address(hdev);
@@ -707,7 +778,7 @@ static int hid_go_raw_event(struct hid_device *hdev, struct hid_report *report,
 	dev_dbg(&hdev->dev, "Rx data as raw input report: [%*ph]\n",
 		GO_PACKET_SIZE, data);
 
-	complete(&drvdata.send_cmd_complete);
+	hid_go_cmd_consume(cmd_rep, ret);
 	return ret;
 
 passthrough:
@@ -722,7 +793,8 @@ static int mcu_property_out(struct hid_device *hdev, u8 id, u8 command,
 	unsigned char *dmabuf __free(kfree) = NULL;
 	u8 header[] = { GO_OUTPUT_REPORT_ID, id, command, index, device };
 	size_t header_size = ARRAY_SIZE(header);
-	int timeout = 50;
+	unsigned long timeout = msecs_to_jiffies(GO_COMMAND_TIMEOUT_MS);
+	long wait_result;
 	int ret;
 
 	if (header_size + len > GO_PACKET_SIZE)
@@ -740,22 +812,14 @@ static int mcu_property_out(struct hid_device *hdev, u8 id, u8 command,
 	dev_dbg(&hdev->dev, "Send data as raw output report: [%*ph]\n",
 		GO_PACKET_SIZE, dmabuf);
 
-	ret = hid_hw_output_report(hdev, dmabuf, GO_PACKET_SIZE);
-	if (ret < 0)
-		return ret;
-
-	ret = ret == GO_PACKET_SIZE ? 0 : -EINVAL;
+	hid_go_cmd_arm(id, command, index, device);
+	ret = hid_go_send_output_report(hdev, dmabuf);
 	if (ret)
-		return ret;
+		return hid_go_cmd_cancel(ret);
 
-	ret = wait_for_completion_interruptible_timeout(&drvdata.send_cmd_complete,
-							msecs_to_jiffies(timeout));
-
-	if (ret == 0) /* timeout occurred */
-		ret = -EBUSY;
-
-	reinit_completion(&drvdata.send_cmd_complete);
-	return 0;
+	wait_result = wait_for_completion_interruptible_timeout(&drvdata.cmd.done,
+								timeout);
+	return hid_go_cmd_finish(wait_result);
 }
 
 static ssize_t version_show(struct device *dev, struct device_attribute *attr,
@@ -2362,9 +2426,9 @@ static int hid_go_cfg_probe(struct hid_device *hdev,
 	if (!buf)
 		return -ENOMEM;
 
+	mutex_init(&drvdata.cfg_mutex);
 	hid_set_drvdata(hdev, &drvdata);
 	drvdata.hdev = hdev;
-	mutex_init(&drvdata.cfg_mutex);
 
 	ret = sysfs_create_groups(&hdev->dev.kobj, top_level_attr_groups);
 	if (ret) {
@@ -2435,8 +2499,11 @@ static int hid_go_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	}
 
 	ep = get_endpoint_address(hdev);
-	if (ep == GO_GP_INTF_IN)
-		init_completion(&drvdata.send_cmd_complete);
+	if (ep == GO_GP_INTF_IN) {
+		init_completion(&drvdata.cmd.done);
+		spin_lock_init(&drvdata.cmd.lock);
+		drvdata.cmd.pending = false;
+	}
 
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 	if (ret) {
