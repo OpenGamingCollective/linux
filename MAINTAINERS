@@ -4466,6 +4466,13 @@ S:	Maintained
 F:	Documentation/ABI/testing/sysfs-platform-ayn-ec
 F:	drivers/platform/x86/ayn-ec.c
 
+AYANEO 3 CONTROLLER HID DRIVER
+M:	Matías Martínez <hello@matias.me>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	Documentation/ABI/testing/sysfs-driver-hid-ayaneo
+F:	drivers/hid/hid-ayaneo.c
+
 AYANEO PLATFORM EC DRIVER
 M:	Antheas Kapenekakis <lkml@antheas.dev>
 L:	platform-driver-x86@vger.kernel.org
