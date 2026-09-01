@@ -38,6 +38,10 @@
  * aw87xxx codec control compatible with kernel 4.19
  *
  ***********************************************************/
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 1)
+#define AW_KERNEL_VER_OVER_6_16_1
+#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 1)
 #define AW_KERNEL_VER_OVER_4_19_1
 #endif
