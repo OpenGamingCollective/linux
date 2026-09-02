@@ -15,6 +15,7 @@
 
 #include <linux/acpi.h>
 #include <linux/backlight.h>
+#include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
@@ -1047,6 +1048,27 @@ static DEVICE_ATTR_RW(gpu_mux_mode);
 #endif /* IS_ENABLED(CONFIG_ASUS_WMI_DEPRECATED_ATTRS) */
 
 /* TUF Laptop Keyboard RGB Modes **********************************************/
+
+/* Command IDs passed in arg0 byte 0 for TUF RGB WMI methods */
+#define ASUS_WMI_TUF_RGB_STATE_CMD_ID	0xbd
+
+/* Bit mask for the save-to-BIOS command flag in kbd_rgb_state_store (arg0 bit 10) */
+#define TUF_RGB_STATE_SAVE	GENMASK(10, 10)
+
+/* Bit masks for kbd_rgb_state_store flags field (arg0 bits [23:16]) */
+#define TUF_RGB_STATE_BOOT	GENMASK(17, 17)
+#define TUF_RGB_STATE_AWAKE	GENMASK(19, 19)
+#define TUF_RGB_STATE_SLEEP	GENMASK(21, 21)
+#define TUF_RGB_STATE_KEYBOARD	GENMASK(23, 23)
+
+/* Bit masks for kbd_rgb_mode_store fields */
+#define TUF_RGB_MODE_CMD	GENMASK(7, 0)
+#define TUF_RGB_MODE_MODE	GENMASK(15, 8)
+#define TUF_RGB_MODE_RED	GENMASK(23, 16)
+#define TUF_RGB_MODE_GREEN	GENMASK(31, 24)
+#define TUF_RGB_MODE_BLUE	GENMASK(7, 0)
+#define TUF_RGB_MODE_SPEED	GENMASK(15, 8)
+
 static ssize_t kbd_rgb_mode_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
@@ -1093,7 +1115,12 @@ static ssize_t kbd_rgb_mode_store(struct device *dev,
 	}
 
 	err = asus_wmi_evaluate_method3(ASUS_WMI_METHODID_DEVS, asus->kbd_rgb_dev,
-			cmd | (mode << 8) | (r << 16) | (g << 24), b | (speed << 8), NULL);
+			FIELD_PREP(TUF_RGB_MODE_CMD, cmd) |
+			FIELD_PREP(TUF_RGB_MODE_MODE, mode) |
+			FIELD_PREP(TUF_RGB_MODE_RED, r) |
+			FIELD_PREP(TUF_RGB_MODE_GREEN, g),
+			FIELD_PREP(TUF_RGB_MODE_BLUE, b) |
+			FIELD_PREP(TUF_RGB_MODE_SPEED, speed), NULL);
 	if (err)
 		return err;
 
@@ -1119,28 +1146,29 @@ static ssize_t kbd_rgb_state_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
-	u32 flags, cmd, boot, awake, sleep, keyboard;
+	u32 cmd, boot, awake, sleep, keyboard;
+	u32 arg0;
 	int err;
 
 	if (sscanf(buf, "%d %d %d %d %d", &cmd, &boot, &awake, &sleep, &keyboard) != 5)
 		return -EINVAL;
 
+	arg0 = ASUS_WMI_TUF_RGB_STATE_CMD_ID;
+
 	if (cmd)
-		cmd = BIT(2);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_SAVE, 1);
 
-	flags = 0;
 	if (boot)
-		flags |= BIT(1);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_BOOT, 1);
 	if (awake)
-		flags |= BIT(3);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_AWAKE, 1);
 	if (sleep)
-		flags |= BIT(5);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_SLEEP, 1);
 	if (keyboard)
-		flags |= BIT(7);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_KEYBOARD, 1);
 
-	/* 0xbd is the required default arg0 for the method. Nothing happens otherwise */
 	err = asus_wmi_evaluate_method3(ASUS_WMI_METHODID_DEVS,
-			ASUS_WMI_DEVID_TUF_RGB_STATE, 0xbd | cmd << 8 | (flags << 16), 0, NULL);
+			ASUS_WMI_DEVID_TUF_RGB_STATE, arg0, 0, NULL);
 	if (err)
 		return err;
 
