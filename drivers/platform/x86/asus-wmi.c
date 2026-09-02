@@ -257,6 +257,7 @@ struct asus_wmi {
 	int tpd_led_wk;
 	struct led_classdev kbd_led;
 	int kbd_led_wk;
+	int kbd_led_last_level;
 	bool kbd_led_notify;
 	bool kbd_led_avail;
 	bool kbd_led_registered;
@@ -310,6 +311,7 @@ struct asus_wmi {
 
 	u32 kbd_rgb_dev;
 	bool kbd_rgb_state_available;
+	u32 kbd_rgb_state_flags;
 	bool oobe_state_available;
 
 	u8 throttle_thermal_policy_mode;
@@ -344,6 +346,7 @@ struct asus_wmi {
 
 /* Global to allow setting externally without requiring driver data */
 static enum asus_ally_mcu_hack use_ally_mcu_hack = ASUS_WMI_ALLY_MCU_HACK_INIT;
+static struct asus_wmi *asus_hotk;
 
 #if IS_ENABLED(CONFIG_ASUS_WMI_DEPRECATED_ATTRS)
 static void asus_wmi_show_deprecated(void)
@@ -1146,6 +1149,8 @@ static ssize_t kbd_rgb_state_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
+	struct led_classdev *led = dev_get_drvdata(dev);
+	struct asus_wmi *asus = container_of(led, struct asus_wmi, kbd_led);
 	u32 cmd, boot, awake, sleep, keyboard;
 	u32 arg0;
 	int err;
@@ -1171,6 +1176,8 @@ static ssize_t kbd_rgb_state_store(struct device *dev,
 			ASUS_WMI_DEVID_TUF_RGB_STATE, arg0, 0, NULL);
 	if (err)
 		return err;
+
+	asus->kbd_rgb_state_flags = arg0;
 
 	return count;
 }
@@ -1944,8 +1951,11 @@ static void do_kbd_led_set(struct led_classdev *led_cdev, int value)
 
 	asus = container_of(led_cdev, struct asus_wmi, kbd_led);
 
-	scoped_guard(spinlock_irqsave, &asus_ref.lock)
+	scoped_guard(spinlock_irqsave, &asus_ref.lock) {
 		asus->kbd_led_wk = clamp_val(value, 0, ASUS_EV_MAX_BRIGHTNESS);
+		if (asus->kbd_led_wk > 0)
+			asus->kbd_led_last_level = asus->kbd_led_wk;
+	}
 
 	if (asus->kbd_led_avail)
 		kbd_led_update(asus);
@@ -2155,6 +2165,7 @@ static int asus_wmi_led_init(struct asus_wmi *asus)
 
 	if (asus->kbd_led_avail) {
 		asus->kbd_led_wk = led_val;
+		asus->kbd_led_last_level = led_val > 0 ? led_val : ASUS_EV_MAX_BRIGHTNESS;
 		if (num_rgb_groups != 0)
 			asus->kbd_led.groups = kbd_rgb_mode_groups;
 	} else {
@@ -5178,6 +5189,7 @@ static int asus_wmi_add(struct platform_device *pdev)
 	asus->platform_device = pdev;
 	wdrv->platform_device = pdev;
 	platform_set_drvdata(asus->platform_device, asus);
+	asus_hotk = asus;
 
 	if (wdrv->detect_quirks)
 		wdrv->detect_quirks(asus->driver);
@@ -5216,6 +5228,14 @@ static int asus_wmi_add(struct platform_device *pdev)
 	asus->kbd_rgb_state_available =
 		asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_TUF_RGB_STATE) ||
 		asus->driver->quirks->kbd_rgb_state_available;
+	if (asus->kbd_rgb_state_available) {
+		asus->kbd_rgb_state_flags =
+			ASUS_WMI_TUF_RGB_STATE_CMD_ID |
+			FIELD_PREP(TUF_RGB_STATE_BOOT, 1) |
+			FIELD_PREP(TUF_RGB_STATE_AWAKE, 1) |
+			FIELD_PREP(TUF_RGB_STATE_SLEEP, 1) |
+			FIELD_PREP(TUF_RGB_STATE_KEYBOARD, 1);
+	}
 
 	if (asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_MINI_LED_MODE))
 		asus->mini_led_dev_id = ASUS_WMI_DEVID_MINI_LED_MODE;
@@ -5356,6 +5376,7 @@ static void asus_wmi_remove(struct platform_device *device)
 	struct asus_wmi *asus;
 
 	asus = platform_get_drvdata(device);
+	asus_hotk = NULL;
 	if (asus->driver->i8042_filter)
 		i8042_remove_filter(asus->driver->i8042_filter);
 	wmi_remove_notify_handler(asus->driver->event_guid);
@@ -5456,17 +5477,54 @@ static int asus_hotk_restore(struct device *device)
 	return 0;
 }
 
+static void asus_tuf_reassert_sleep_rgb_state(struct asus_wmi *asus)
+{
+	if (asus && asus->driver->quirks->kbd_rgb_state_available &&
+	    asus->kbd_rgb_state_available &&
+	    (asus->kbd_rgb_state_flags & TUF_RGB_STATE_SLEEP)) {
+		int level;
+		u32 arg0;
+
+		/*
+		 * Re-assert keyboard backlight using the last user-configured
+		 * brightness level (falling back to max brightness) with the
+		 * light-on bit (0x80) set.
+		 */
+		level = asus->kbd_led_last_level ?
+			asus->kbd_led_last_level : ASUS_EV_MAX_BRIGHTNESS;
+		asus_wmi_set_devstate(ASUS_WMI_DEVID_KBD_BACKLIGHT,
+				      0x80 | (level & 0x7f), NULL);
+
+		/* Re-assert the last user-configured TUF RGB power state */
+		arg0 = asus->kbd_rgb_state_flags |
+		       FIELD_PREP(TUF_RGB_STATE_SAVE, 1);
+		asus_wmi_evaluate_method3(ASUS_WMI_METHODID_DEVS,
+					  ASUS_WMI_DEVID_TUF_RGB_STATE,
+					  arg0, 0, NULL);
+	}
+}
+
 static int asus_hotk_prepare(struct device *device)
 {
+	struct asus_wmi *asus = dev_get_drvdata(device);
+
 	if (use_ally_mcu_hack == ASUS_WMI_ALLY_MCU_HACK_ENABLED) {
 		acpi_execute_simple_method(NULL, ASUS_USB0_PWR_EC0_CSEE,
 					   ASUS_USB0_PWR_EC0_CSEE_OFF);
 		msleep(ASUS_USB0_PWR_EC0_CSEE_WAIT);
 	}
+
+	asus_tuf_reassert_sleep_rgb_state(asus);
+
 	return 0;
 }
 
 #if defined(CONFIG_SUSPEND)
+static void asus_s2idle_prepare(void)
+{
+	asus_tuf_reassert_sleep_rgb_state(asus_hotk);
+}
+
 static void asus_ally_s2idle_restore(void)
 {
 	if (use_ally_mcu_hack == ASUS_WMI_ALLY_MCU_HACK_ENABLED) {
@@ -5476,20 +5534,20 @@ static void asus_ally_s2idle_restore(void)
 	}
 }
 
-/* Use only for Ally devices due to the wake_on_ac */
-static struct acpi_s2idle_dev_ops asus_ally_s2idle_dev_ops = {
+static struct acpi_s2idle_dev_ops asus_s2idle_dev_ops = {
+	.prepare = asus_s2idle_prepare,
 	.restore = asus_ally_s2idle_restore,
 };
 
 static void asus_s2idle_check_register(void)
 {
-	if (acpi_register_lps0_dev(&asus_ally_s2idle_dev_ops))
+	if (acpi_register_lps0_dev(&asus_s2idle_dev_ops))
 		pr_warn("failed to register LPS0 sleep handler in asus-wmi\n");
 }
 
 static void asus_s2idle_check_unregister(void)
 {
-	acpi_unregister_lps0_dev(&asus_ally_s2idle_dev_ops);
+	acpi_unregister_lps0_dev(&asus_s2idle_dev_ops);
 }
 #else
 static void asus_s2idle_check_register(void) {}
