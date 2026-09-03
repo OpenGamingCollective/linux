@@ -8205,6 +8205,7 @@ amdgpu_dm_connector_atomic_duplicate_state(struct drm_connector *connector)
 	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
 
 	new_state->freesync_capable = state->freesync_capable;
+	new_state->freesync_on_desktop_capable = state->freesync_on_desktop_capable;
 	new_state->abm_level = state->abm_level;
 	new_state->scaling = state->scaling;
 	new_state->underscan_enable = state->underscan_enable;
@@ -9418,8 +9419,10 @@ void amdgpu_dm_connector_init_helper(struct amdgpu_display_manager *dm,
 	    connector_type == DRM_MODE_CONNECTOR_eDP) {
 		drm_connector_attach_hdr_output_metadata_property(&aconnector->base);
 
-		if (!aconnector->mst_root)
+		if (!aconnector->mst_root) {
 			drm_connector_attach_vrr_capable_property(&aconnector->base);
+			drm_connector_attach_passive_vrr_capable_property(&aconnector->base);
+		}
 
 		if (adev->dm.hdcp_workqueue)
 			drm_connector_attach_content_protection_property(&aconnector->base, true);
@@ -11985,6 +11988,12 @@ static void get_freesync_config_for_crtc(
 		config.vsif_supported = true;
 		config.btr = true;
 
+		if (new_con_state->freesync_on_desktop_capable)
+			new_crtc_state->stream->freesync_on_desktop =
+				!new_crtc_state->base.passive_vrr_disabled;
+		else
+			new_crtc_state->stream->freesync_on_desktop = false;
+
 		if (fs_vid_mode) {
 			config.state = VRR_STATE_ACTIVE_FIXED;
 			config.fixed_refresh_in_uhz = new_crtc_state->freesync_config.fixed_refresh_in_uhz;
@@ -11996,6 +12005,7 @@ static void get_freesync_config_for_crtc(
 		}
 	} else {
 		config.state = VRR_STATE_UNSUPPORTED;
+		new_crtc_state->stream->freesync_on_desktop = false;
 	}
 out:
 	new_crtc_state->freesync_config = config;
@@ -14116,7 +14126,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	if (do_mccs) {
 		dm_helpers_read_mccs_caps(adev->dm.dc->ctx, amdgpu_dm_connector->dc_link, sink);
 
-		if (sink->edid_caps.freesync_vcp_code && !sink->mccs_caps.freesync_supported)
+		if (!connector->display_info.hdmi.vrr_cap.supported &&
+		    sink->edid_caps.freesync_vcp_code && !sink->mccs_caps.freesync_supported)
 			freesync_capable = false;
 
 		if (sink->mccs_caps.freesync_supported && freesync_capable)
@@ -14124,8 +14135,10 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	}
 
 update:
-	if (dm_con_state)
+	if (dm_con_state) {
 		dm_con_state->freesync_capable = freesync_capable;
+		dm_con_state->freesync_on_desktop_capable = freesync_capable;
+	}
 
 	drm_dbg_driver(adev_to_drm(adev),
 		       "VRR: caps result: freesync_capable=%d min_vfreq=%d max_vfreq=%d\n",
@@ -14141,6 +14154,9 @@ update:
 	if (connector->vrr_capable_property)
 		drm_connector_set_vrr_capable_property(connector,
 						       freesync_capable);
+
+	if (connector->passive_vrr_capable_property)
+		drm_connector_set_passive_vrr_capable_property(connector, freesync_capable);
 }
 
 void amdgpu_dm_trigger_timing_sync(struct drm_device *dev)
