@@ -773,7 +773,7 @@ struct mc_subled ayn_led_mc_subled_info[] = {
 
 struct led_classdev_mc ayn_led_mc = {
 	.led_cdev = {
-		.name = "ayn:rgb:joystick_rings",
+		.name = "go:rgb:joystick_rings",
 		.brightness = 0,
 		.max_brightness = 255,
 		.brightness_set = ayn_led_mc_brightness_set,
