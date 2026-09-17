@@ -205,6 +205,20 @@ config HID_AUREAL
 	help
 	Support for Aureal Cy se W-01RN Remote Controller and other Aureal derived remotes.
 
+config HID_AYANEO
+	tristate "AYANEO 3 detachable controller support"
+	depends on USB_HID
+	depends on DMI
+	depends on LEDS_CLASS_MULTICOLOR
+	help
+	  Provides support for the detachable controller ("Magic Modules")
+	  of the AYANEO 3 handheld: module identification, software eject
+	  and RGB control of the joystick rings. Complements the ayaneo-ec
+	  platform driver, which handles module attach state and controller
+	  power.
+
+	  Say Y or M here if you have an AYANEO 3.
+
 config HID_BELKIN
 	tristate "Belkin Flip KVM and Wireless keyboard"
 	help
