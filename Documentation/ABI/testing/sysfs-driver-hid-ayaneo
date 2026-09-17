@@ -1,0 +1,36 @@
+What:		/sys/bus/hid/drivers/hid-ayaneo/<dev>/module_left
+What:		/sys/bus/hid/drivers/hid-ayaneo/<dev>/module_right
+Date:		August 2026
+KernelVersion:	7.3
+Contact:	Matías Martínez <hello@matias.me>
+Description:
+		Reports the type of the module currently inserted in the
+		left/right slot of the AYANEO 3 detachable controller, as
+		the raw identifier reported by the controller firmware in
+		hexadecimal (e.g. "0x04"). Bits 0-5 encode the module
+		type, bit 6 indicates the module is inserted rotated.
+
+		Reading these attributes queries the controller and can
+		take up to a second.
+
+What:		/sys/bus/hid/drivers/hid-ayaneo/<dev>/eject
+Date:		August 2026
+KernelVersion:	7.3
+Contact:	Matías Martínez <hello@matias.me>
+Description:
+		Write-only. Writing "left", "right" or "both" asks the
+		controller firmware to release the corresponding
+		module(s). The write blocks until the firmware confirms
+		the release handshake (typically a few seconds). The
+		module is physically released once controller power is
+		subsequently cut through the ayaneo-ec platform driver's
+		controller_power attribute; that final step is left to
+		userspace.
+
+What:		/sys/bus/hid/drivers/hid-ayaneo/<dev>/reset
+Date:		August 2026
+KernelVersion:	7.3
+Contact:	Matías Martínez <hello@matias.me>
+Description:
+		Write-only. Writing "1" asks the controller firmware to
+		perform a quick reset of the controller configuration.
