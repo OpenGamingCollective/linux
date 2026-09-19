@@ -1,0 +1,15 @@
+What:		/sys/class/leds/<led>/hw_pattern
+Date:		August 2026
+KernelVersion:	7.3
+Contact:	Matías Martínez <hello@matias.me>
+Description:
+		Specify a hardware pattern for the AYANEO 3 joystick
+		rings LED. The firmware supports a single breathing
+		pattern, pulsing the current colour at a fixed,
+		firmware-controlled period:
+
+		"0 <t> <brightness> <t>"
+
+		Both delta_t values are accepted but ignored, as the
+		period is not configurable. <brightness> must be
+		non-zero. Any other pattern is rejected.
