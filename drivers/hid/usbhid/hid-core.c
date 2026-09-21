@@ -688,7 +688,8 @@ static int usbhid_open(struct hid_device *hid)
 
 	set_bit(HID_OPENED, &usbhid->iofl);
 
-	if (hid->quirks & HID_QUIRK_ALWAYS_POLL) {
+	if ((hid->quirks & HID_QUIRK_ALWAYS_POLL) ||
+	    list_empty(&hid->report_enum[HID_INPUT_REPORT].report_list)) {
 		res = 0;
 		goto Done;
 	}
