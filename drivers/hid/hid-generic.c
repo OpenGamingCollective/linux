@@ -31,7 +31,11 @@ static int __check_hid_generic(struct device_driver *drv, void *data)
 	if (hdrv == &hid_generic)
 		return 0;
 
-	return hid_match_device(hdev, hdrv) != NULL;
+	if (!hid_match_device(hdev, hdrv))
+		return 0;
+
+	/* An ID match alone does not mean the driver wants this interface. */
+	return !hdrv->match || hdrv->match(hdev, false);
 }
 
 static bool hid_generic_match(struct hid_device *hdev,
