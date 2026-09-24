@@ -1,0 +1,28 @@
+What:           /sys/class/leds/*:rgb:joystick_rings/effect
+Date:           September 2026
+Contact:        Linux input mailing list <linux-input@vger.kernel.org>
+Description:
+                Select the AYANEO controller firmware LED effect. Reading
+                returns the selected effect name. Supported writes are:
+
+                none: standard multicolour brightness/intensity and the
+                LED pattern trigger control the rings.
+
+                rainbow: firmware cycles both rings through colours at a
+                fixed speed. Brightness controls amplitude; zero turns the
+                output off without changing the selected effect. Firmware
+                controls hue and tempo, independently of multi_intensity.
+
+                The rainbow effect requires no LED trigger to be selected.
+                Hardware pattern writes fail with EBUSY while rainbow is
+                selected. Select none before configuring a hardware pattern.
+                Clearing the effect restores normal multicolour interpretation
+                using the current brightness and cached intensity.
+
+What:           /sys/class/leds/*:rgb:joystick_rings/effect_index
+Date:           September 2026
+Contact:        Linux input mailing list <linux-input@vger.kernel.org>
+Description:
+                Read-only, space-separated supported effect names:
+                "none rainbow". The effect interface does not expose controller
+                reset, module eject or arbitrary HID commands.
