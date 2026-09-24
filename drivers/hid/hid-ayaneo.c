@@ -683,6 +683,8 @@ static void ayaneo_remove(struct hid_device *hdev)
 {
 	struct ayaneo *aya = hid_get_drvdata(hdev);
 
+	/* HID core blocks replies during remove; the final LED write needs one. */
+	hid_device_io_start(hdev);
 	led_classdev_multicolor_unregister(&aya->mcled);
 	/*
 	 * A brightness store racing with the unregister can requeue
@@ -692,6 +694,7 @@ static void ayaneo_remove(struct hid_device *hdev)
 	 * the transport is still up.
 	 */
 	flush_work(&aya->mcled.led_cdev.set_brightness_work);
+	hid_device_io_stop(hdev);
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
 }
