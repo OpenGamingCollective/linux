@@ -37,6 +37,7 @@
 #include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/hid.h>
+#include <linux/string.h>
 #include <linux/led-class-multicolor.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -487,6 +488,28 @@ static const struct dmi_system_id ayaneo_dmi_table[] = {
 	{}
 };
 
+/*
+ * hid-generic must know that the other interfaces remain generic before it
+ * gives up their bindings. The known vendor descriptor starts with Usage Page
+ * 0xff00, Usage 1, Application Collection. Keep probe's parsed-usage check too.
+ */
+static bool ayaneo_match(struct hid_device *hdev, bool ignore_special_driver)
+{
+	static const u8 vendor_application[] = {
+		0x06, 0x00, 0xff, 0x09, 0x01, 0xa1, 0x01
+	};
+
+	if (ignore_special_driver ||
+	    (hdev->quirks & HID_QUIRK_IGNORE_SPECIAL_DRIVER) ||
+	    !hid_is_usb(hdev) || !dmi_check_system(ayaneo_dmi_table))
+		return false;
+
+	return hdev->dev_rdesc &&
+	       hdev->dev_rsize >= sizeof(vendor_application) &&
+	       !memcmp(hdev->dev_rdesc, vendor_application,
+		       sizeof(vendor_application));
+}
+
 static int ayaneo_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	struct ayaneo *aya;
@@ -580,6 +603,7 @@ MODULE_DEVICE_TABLE(hid, ayaneo_devices);
 static struct hid_driver ayaneo_driver = {
 	.name = "hid-ayaneo",
 	.id_table = ayaneo_devices,
+	.match = ayaneo_match,
 	.probe = ayaneo_probe,
 	.remove = ayaneo_remove,
 	.raw_event = ayaneo_raw_event,
