@@ -4470,7 +4470,6 @@ AYANEO 3 CONTROLLER HID DRIVER
 M:	Matías Martínez <hello@matias.me>
 L:	linux-input@vger.kernel.org
 S:	Maintained
-F:	Documentation/ABI/testing/sysfs-class-led-driver-hid-ayaneo
 F:	Documentation/ABI/testing/sysfs-driver-hid-ayaneo
 F:	drivers/hid/hid-ayaneo.c
 
