@@ -93,6 +93,8 @@ struct asus_armoury_priv {
 
 	u32 mini_led_dev_id;
 	u32 gpu_mux_dev_id;
+
+	bool requires_fan_curve;
 };
 
 static struct asus_armoury_priv asus_armoury = {
@@ -125,10 +127,10 @@ static ssize_t pending_reboot_show(struct kobject *kobj, struct kobj_attribute *
 
 static struct kobj_attribute pending_reboot = __ATTR_RO(pending_reboot);
 
-static bool asus_bios_requires_reboot(struct kobj_attribute *attr)
+static bool asus_bios_requires_reboot(const char *fsname)
 {
-	return !strcmp(attr->attr.name, "gpu_mux_mode") ||
-	       !strcmp(attr->attr.name, "panel_hd_mode");
+	return !strcmp(fsname, "gpu_mux_mode") ||
+	       !strcmp(fsname, "panel_hd_mode");
 }
 
 /**
@@ -216,6 +218,22 @@ static int armoury_set_devstate(struct kobj_attribute *attr,
 	u32 result;
 	int err;
 
+	/* On some models, PPT changes require an active fan curve */
+	if (asus_armoury.requires_fan_curve) {
+		switch (dev_id) {
+		case ASUS_WMI_DEVID_PPT_PL1_SPL:
+		case ASUS_WMI_DEVID_PPT_PL2_SPPT:
+		case ASUS_WMI_DEVID_PPT_PL3_FPPT:
+		case ASUS_WMI_DEVID_PPT_APU_SPPT:
+		case ASUS_WMI_DEVID_PPT_PLAT_SPPT:
+			if (!asus_wmi_custom_fan_curve_is_enabled()) {
+				pr_warn_once("PPT change requires an active fan curve on this model. Enable a custom fan curve first.\n");
+				return -EBUSY;
+			}
+			break;
+		}
+	}
+
 	/*
 	 * Prevent developers from bricking devices or issuing dangerous
 	 * commands that can be difficult or impossible to recover from.
@@ -276,7 +294,7 @@ static int armoury_attr_enum_list(char *buf, size_t enum_values)
 
 ssize_t armoury_attr_uint_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t count, u32 min, u32 max,
-				u32 *store_value, u32 wmi_dev)
+				u32 *store_value, u32 wmi_dev, const char *fsname)
 {
 	u32 value;
 	int err;
@@ -294,9 +312,9 @@ ssize_t armoury_attr_uint_store(struct kobject *kobj, struct kobj_attribute *att
 
 	if (store_value != NULL)
 		*store_value = value;
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, fsname, attr->attr.name);
 
-	if (asus_bios_requires_reboot(attr))
+	if (asus_bios_requires_reboot(fsname))
 		asus_set_reboot_and_signal_event();
 
 	return count;
@@ -424,7 +442,8 @@ static ssize_t mini_led_mode_current_value_store(struct kobject *kobj,
 
 	return armoury_attr_uint_store(kobj, attr, mapped_value, count, 0,
 				       mini_led_mode_map[mode], NULL,
-				       asus_armoury.mini_led_dev_id);
+				       asus_armoury.mini_led_dev_id,
+				       "mini_led_mode");
 }
 
 static ssize_t mini_led_mode_possible_values_show(struct kobject *kobj,
@@ -477,7 +496,7 @@ static ssize_t gpu_mux_mode_current_value_store(struct kobject *kobj,
 	if (err)
 		return err;
 
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "gpu_mux_mode", attr->attr.name);
 	asus_set_reboot_and_signal_event();
 
 	return count;
@@ -512,7 +531,7 @@ static ssize_t dgpu_disable_current_value_store(struct kobject *kobj,
 			return err;
 	}
 
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "dgpu_disable", attr->attr.name);
 
 	return count;
 }
@@ -634,7 +653,7 @@ static ssize_t egpu_enable_current_value_store(struct kobject *kobj, struct kobj
 	 */
 	armoury_pci_rescan();
 
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "egpu_enable", attr->attr.name);
 
 	return count;
 }
@@ -728,7 +747,7 @@ static ssize_t apu_mem_current_value_store(struct kobject *kobj, struct kobj_att
 	}
 
 	pr_info("APU memory changed to %uGB, reboot required\n", requested + 1);
-	sysfs_notify(kobj, NULL, attr->attr.name);
+	sysfs_notify(kobj, "apu_mem", attr->attr.name);
 
 	asus_set_reboot_and_signal_event();
 
@@ -1009,6 +1028,8 @@ static void init_rog_tunables(void)
 		pr_info("No power data available for this system\n");
 		return;
 	}
+
+	asus_armoury.requires_fan_curve = power_data->requires_fan_curve;
 
 	/* Initialize AC power tunables */
 	ac_limits = power_data->ac_data;
