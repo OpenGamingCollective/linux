@@ -13922,6 +13922,41 @@ static bool parse_edid_cea_dmub(struct amdgpu_display_manager *dm,
 	return vsdb_info->freesync_supported;
 }
 
+/*
+ * Software fallback for the AMD FreeSync VSDB. The DMUB/DMCU parsers need
+ * display microcontroller firmware; some ASICs (e.g. Cyan Skillfish / BC-250)
+ * run with none loaded, so the firmware path fails and FreeSync over HDMI and
+ * DP->HDMI PCONs is never enabled even when the sink advertises it.
+ */
+static bool parse_edid_cea_sw(u8 *edid_ext, int len,
+		struct amdgpu_hdmi_vsdb_info *vsdb_info)
+{
+	int i = 4, end = edid_ext[2];
+
+	if (end < 4 || end > len)
+		return false;
+
+	while (i < end) {
+		u8 tag = edid_ext[i] >> 5, blen = edid_ext[i] & 0x1f;
+		const u8 *p = &edid_ext[i + 1];
+
+		if (i + 1 + blen > end)
+			break;
+		/* Vendor-specific block, AMD OUI 00-00-1A, FreeSync supported bit */
+		if (tag == 3 && blen >= 7 &&
+		    p[0] == 0x1a && p[1] == 0x00 && p[2] == 0x00 && (p[4] & 0x1)) {
+			vsdb_info->freesync_supported = 1;
+			vsdb_info->amd_vsdb_version = p[3];
+			vsdb_info->min_refresh_rate_hz = p[5];
+			vsdb_info->max_refresh_rate_hz = p[6];
+			vsdb_info->freesync_mccs_vcp_code = 0;
+			return true;
+		}
+		i += 1 + blen;
+	}
+	return false;
+}
+
 static bool parse_edid_cea(struct amdgpu_dm_connector *aconnector,
 		u8 *edid_ext, int len,
 		struct amdgpu_hdmi_vsdb_info *vsdb_info)
@@ -13935,6 +13970,16 @@ static bool parse_edid_cea(struct amdgpu_dm_connector *aconnector,
 	else
 		ret = parse_edid_cea_dmcu(&adev->dm, edid_ext, len, vsdb_info);
 	mutex_unlock(&adev->dm.dc_lock);
+
+	if (!ret) {
+		ret = parse_edid_cea_sw(edid_ext, len, vsdb_info);
+		if (ret)
+			drm_info(adev_to_drm(adev),
+				 "FreeSync VSDB parsed in software (v%d, %d-%d Hz)\n",
+				 vsdb_info->amd_vsdb_version,
+				 vsdb_info->min_refresh_rate_hz,
+				 vsdb_info->max_refresh_rate_hz);
+	}
 	return ret;
 }
 
