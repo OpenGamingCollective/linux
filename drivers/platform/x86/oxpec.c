@@ -45,6 +45,7 @@ enum oxp_board {
 	aok_zoe_a1 = 1,
 	orange_pi_neo,
 	oxp_2,
+	oxp_3,
 	oxp_fly,
 	oxp_mini_amd,
 	oxp_mini_amd_a07,
@@ -153,6 +154,13 @@ static const struct dmi_system_id dmi_table[] = {
 			DMI_MATCH(DMI_BOARD_NAME, "ONEXPLAYER 2"),
 		},
 		.driver_data = (void *)oxp_2,
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ONE-NETBOOK"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "ONEXPLAYER 3"),
+		},
+		.driver_data = (void *)oxp_3,
 	},
 	{
 		.matches = {
@@ -790,6 +798,8 @@ static umode_t oxp_ec_hwmon_is_visible(const void *drvdata,
 	case hwmon_fan:
 		return 0444;
 	case hwmon_pwm:
+		if (board == oxp_3)
+			return 0;
 		return 0644;
 	default:
 		return 0;
@@ -803,6 +813,7 @@ static int oxp_pwm_fan_speed(long *val)
 	case orange_pi_neo:
 		return read_from_ec(ORANGEPI_SENSOR_FAN_REG, 2, val);
 	case oxp_2:
+	case oxp_3:
 	case oxp_x1:
 	case oxp_g1_i:
 		return read_from_ec(OXP_2_SENSOR_FAN_REG, 2, val);
