@@ -392,8 +392,12 @@ static int claw_gamepad_mode_event(struct claw_drvdata *drvdata,
 {
 	if (cmd_rep->data[0] >= ARRAY_SIZE(claw_gamepad_mode_text) ||
 	    !claw_gamepad_mode_text[cmd_rep->data[0]] ||
-	    cmd_rep->data[1] >= ARRAY_SIZE(claw_mkeys_function_text))
+	    cmd_rep->data[1] >= ARRAY_SIZE(claw_mkeys_function_text)) {
+		dev_info(&drvdata->hdev->dev,
+			 "Got invalid output from gamepad mode event. Mode: %u, Function: %u",
+			 cmd_rep->data[0], cmd_rep->data[1]);
 		return -EINVAL;
+	}
 
 	scoped_guard(spinlock_irqsave, &drvdata->mode_lock) {
 		drvdata->gamepad_mode = cmd_rep->data[0];
@@ -585,8 +589,10 @@ static int __claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
 			drvdata->orphan_ack_pending = false;
 	}
 
-	if (header_size + len > CLAW_PACKET_SIZE)
+	if (header_size + len > CLAW_PACKET_SIZE) {
+		dev_info(&drvdata->hdev->dev, "Bad header size: %zu", header_size + len);
 		return -EINVAL;
+	}
 
 	/* We can't use a devm_alloc reusable buffer without side effects during suspend */
 	dmabuf = kzalloc(CLAW_PACKET_SIZE, GFP_KERNEL);
