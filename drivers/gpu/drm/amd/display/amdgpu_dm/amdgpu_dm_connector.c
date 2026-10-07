@@ -4023,8 +4023,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 
 		if (!force_hdmi_vrr) {
 			i = parse_hdmi_amd_vsdb(amdgpu_dm_connector, edid, &vsdb_info);
+			amdgpu_dm_connector->vsdb_info = vsdb_info;
 			if (i >= 0) {
-				amdgpu_dm_connector->vsdb_info = vsdb_info;
 				sink->edid_caps.freesync_vcp_code =
 					vsdb_info.freesync_mccs_vcp_code;
 
