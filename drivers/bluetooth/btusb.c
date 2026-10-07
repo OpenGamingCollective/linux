@@ -702,6 +702,8 @@ static const struct usb_device_id quirks_table[] = {
 	{ USB_DEVICE(0x13d3, 0x3606), .driver_info = BTUSB_MEDIATEK |
 						     BTUSB_WIDEBAND_SPEECH },
 	/* MediaTek MT7902 Bluetooth devices */
+	{ USB_DEVICE(0x0489, 0xe156), .driver_info = BTUSB_MEDIATEK |
+						     BTUSB_WIDEBAND_SPEECH },
 	{ USB_DEVICE(0x0e8d, 0x1ede), .driver_info = BTUSB_MEDIATEK |
 						     BTUSB_WIDEBAND_SPEECH },
 	{ USB_DEVICE(0x13d3, 0x3579), .driver_info = BTUSB_MEDIATEK |
@@ -3606,7 +3608,8 @@ done:
 
 static int btusb_setup_qca_load_rampatch(struct hci_dev *hdev,
 					 struct qca_version *ver,
-					 const struct qca_device_info *info)
+					 const struct qca_device_info *info,
+					 u8 status)
 {
 	struct qca_rampatch_version *rver;
 	const struct firmware *fw;
@@ -3651,19 +3654,27 @@ static int btusb_setup_qca_load_rampatch(struct hci_dev *hdev,
 		    "firmware rome 0x%x build 0x%x",
 		    rver_rom, rver_patch, ver_rom, ver_patch);
 
-	/* Allow rampatch when the patch version equals the firmware version.
-	 * A firmware download may be aborted by a transient USB error (e.g.
-	 * disconnect) after the controller updates version info but before
-	 * completion.
-	 * Allowing equal versions enables re-flashing during recovery.
-	 */
 	if (rver_rom != ver_rom || rver_patch < ver_patch) {
 		bt_dev_err(hdev, "rampatch file version did not match with firmware");
 		err = -EINVAL;
 		goto done;
 	}
 
+	/* The controller already runs this build and reports it patched, so
+	 * it was patched since it last lost power. Re-flashing it makes WCN785x
+	 * reset itself and fail to answer HCI_Reset until power is fully
+	 * removed. Return 1 so the caller can skip the NVM download too.
+	 */
+	if (rver_patch == ver_patch && (status & QCA_PATCH_UPDATED)) {
+		bt_dev_info(hdev, "QCA: rampatch already active, skipping download");
+		err = 1;
+		goto done;
+	}
+
 	err = btusb_setup_qca_download_fw(hdev, fw, info->rampatch_hdr);
+	/* A header-only file leaves the control transfer's byte count in err */
+	if (err > 0)
+		err = 0;
 
 done:
 	release_firmware(fw);
@@ -3750,6 +3761,7 @@ static int btusb_setup_qca(struct hci_dev *hdev)
 	const struct qca_device_info *info = NULL;
 	struct qca_version ver;
 	u32 ver_rom;
+	bool already_patched;
 	u8 status;
 	int i, err;
 
@@ -3776,16 +3788,30 @@ static int btusb_setup_qca(struct hci_dev *hdev)
 		return -ENODEV;
 	}
 
+	/*
+	 * Some QCA chips (notably WCN785x family rebadged by Foxconn as
+	 * USB 0489:e10a in MSI X870/B850 motherboards) retain firmware
+	 * state across reboots in on-die NVM. After a previous OS or
+	 * driver version has loaded firmware, QCA_CHECK_STATUS reports
+	 * PATCH_UPDATED|SYSCFG_UPDATED even though the running firmware
+	 * may be incompatible with what bluez/btusb expect. Trusting the
+	 * status flags then leaves the chip on stale firmware, breaking
+	 * AVDTP transport setup (Acquire returns Failed; A2DP audio
+	 * cannot stream).
+	 *
+	 * So a download is only skipped when the status flags agree with the
+	 * build the controller reports. That still avoids re-flashing a
+	 * controller that already runs the rampatch build.
+	 */
 	err = btusb_qca_send_vendor_req(udev, QCA_CHECK_STATUS, &status,
 					sizeof(status));
 	if (err)
 		return err;
 
-	if (!(status & QCA_PATCH_UPDATED)) {
-		err = btusb_setup_qca_load_rampatch(hdev, &ver, info);
-		if (err < 0)
-			return err;
-	}
+	err = btusb_setup_qca_load_rampatch(hdev, &ver, info, status);
+	if (err < 0)
+		return err;
+	already_patched = err > 0;
 
 	err = btusb_qca_send_vendor_req(udev, QCA_GET_TARGET_VERSION, &ver,
 					sizeof(ver));
@@ -3797,7 +3823,7 @@ static int btusb_setup_qca(struct hci_dev *hdev)
 		btdata->qca_dump.controller_id = le32_to_cpu(ver.rom_version);
 	}
 
-	if (!(status & QCA_SYSCFG_UPDATED)) {
+	if (!already_patched || !(status & QCA_SYSCFG_UPDATED)) {
 		err = btusb_setup_qca_load_nvm(hdev, &ver, info);
 		if (err < 0)
 			return err;
