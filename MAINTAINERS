@@ -1316,6 +1316,7 @@ M:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
 L:	platform-driver-x86@vger.kernel.org
 S:	Supported
 F:	Documentation/ABI/testing/sysfs-platform-amd-wmi-aod
+F:	Documentation/wmi/devices/amd-wmi-aod.rst
 F:	drivers/platform/x86/amd/wmi/
 
 AMD XDNA DRIVER
