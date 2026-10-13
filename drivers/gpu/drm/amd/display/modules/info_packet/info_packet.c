@@ -669,8 +669,8 @@ static void build_vtem_infopacket_data(const struct dc_stream_state *stream,
 	set_field_with_mask(&infopacket->sb[VTEM_MD0], MASK_VTEM_MD0__FVA_FACTOR_M1,
 			(fva_factor > 0) ? (fva_factor - 1) : 0);
 	/* VRR Parameters */
-	if (vrr->state == VRR_STATE_ACTIVE_VARIABLE ||
-	    vrr->state == VRR_STATE_ACTIVE_FIXED) {
+	if (vrr->state != VRR_STATE_DISABLED &&
+			vrr->state != VRR_STATE_UNSUPPORTED) {
 		set_field_with_mask(&infopacket->sb[VTEM_MD0], MASK_VTEM_MD0__VRR_EN, 1);
 	} else {
 		set_field_with_mask(&infopacket->sb[VTEM_MD0], MASK_VTEM_MD0__VRR_EN, 0);
@@ -712,8 +712,8 @@ static void build_vtem_infopacket_data(const struct dc_stream_state *stream,
 	 * VTEM with Data_Set_Length = 0 preserves the every-MTW cadence while
 	 * staying compliant (e.g. HDMI GCTS HF1-58 step 6.2).
 	 */
-	if (vrr->state != VRR_STATE_ACTIVE_VARIABLE &&
-	    vrr->state != VRR_STATE_ACTIVE_FIXED && fva_factor == 0)
+	if ((vrr->state == VRR_STATE_DISABLED ||
+	     vrr->state == VRR_STATE_UNSUPPORTED) && fva_factor == 0)
 		set_field_with_mask(&infopacket->sb[VTEM_PB6],
 				 MASK_VTEM_PB6__DATA_SET_LENGTH_LSB, 0);
 
