@@ -693,11 +693,8 @@ static int ayaneo_register_led(struct ayaneo *aya)
 	aya->mcled.subled_info = aya->subleds;
 	aya->mcled.num_colors = 3;
 
-	cdev->name = devm_kasprintf(&aya->hdev->dev, GFP_KERNEL,
-				    "%s:rgb:joystick_rings",
-				    dev_name(&aya->hdev->dev));
-	if (!cdev->name)
-		return -ENOMEM;
+	/* OGC-only Steam compatibility name; the generic ABI remains unchanged. */
+	cdev->name = "go:rgb:joystick_rings";
 	cdev->color = LED_COLOR_ID_RGB;
 	cdev->brightness = 0;
 	cdev->max_brightness = 255;
