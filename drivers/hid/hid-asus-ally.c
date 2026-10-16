@@ -7,6 +7,7 @@
 
 #include "linux/compiler_attributes.h"
 #include "linux/device.h"
+#include <linux/dmi.h>
 #include <linux/platform_data/x86/asus-wmi.h>
 #include <linux/platform_device.h>
 #include "linux/pm.h"
@@ -373,6 +374,8 @@ struct ally_x_device {
 	bool update_qam_btn;
 	/* Set if the QAM and AC buttons emit Xbox and Xbox+A */
 	bool qam_btns_steam_mode;
+	/* Set on the ROG Xbox Ally X20, whose MCU uses different QAM and AC codes */
+	bool rc74xa;
 	bool update_ff;
 };
 
@@ -1459,9 +1462,12 @@ static int ally_x_raw_event(struct ally_x_device *ally_x, struct hid_report *rep
 	 * use the events unless we grab those and use them here. Only works for Ally X.
 	 */
 	else if (data[0] == 0x5A) {
+		bool qam_short = ally_x->rc74xa ? data[1] == 0xA0 :
+						  data[1] == 0x38 || data[1] == 0x93;
+
 		if (ally_x->qam_btns_steam_mode) {
 			spin_lock_irqsave(&ally_x->lock, flags);
-			if ((data[1] == 0x38 || data[1] == 0x93) && !ally_x->update_qam_btn) {
+			if (qam_short && !ally_x->update_qam_btn) {
 				ally_x->update_qam_btn = true;
 				if (ally_x->output_worker_initialized)
 					schedule_work(&ally_x->output_worker);
@@ -1471,12 +1477,17 @@ static int ally_x_raw_event(struct ally_x_device *ally_x, struct hid_report *rep
 			input_report_key(ally_x->input, BTN_MODE, data[1] == 0xA6);
 		} else {
 			input_report_key(ally_x->input, KEY_F16, data[1] == 0xA6);
-			input_report_key(ally_x->input, KEY_PROG1, data[1] == 0x38 || data[1] == 0x93);
+			input_report_key(ally_x->input, KEY_PROG1, qam_short);
 		}
 		/* QAM long press */
 		input_report_key(ally_x->input, KEY_F17, data[1] == 0xA7);
 		/* QAM long press released */
 		input_report_key(ally_x->input, KEY_F18, data[1] == 0xA8);
+		/* RC74XA AC and QAM long presses */
+		if (ally_x->rc74xa) {
+			input_report_key(ally_x->input, KEY_F21, data[1] == 0x38);
+			input_report_key(ally_x->input, KEY_F22, data[1] == 0xA4);
+		}
 	}
 
 	input_sync(ally_x->input);
@@ -1605,6 +1616,8 @@ static struct input_dev *ally_x_setup_input(struct hid_device *hdev)
 	input_set_capability(input, EV_KEY, KEY_F16);
 	input_set_capability(input, EV_KEY, KEY_F17);
 	input_set_capability(input, EV_KEY, KEY_F18);
+	input_set_capability(input, EV_KEY, KEY_F21);
+	input_set_capability(input, EV_KEY, KEY_F22);
 
 	input_set_capability(input, EV_FF, FF_RUMBLE);
 	input_ff_create_memless(input, NULL, ally_x_play_effect);
@@ -1658,6 +1671,7 @@ static struct ally_x_device *ally_x_create(struct hid_device *hdev)
 	ally_x->output_worker_initialized = true;
 	ally_x->qam_btns_steam_mode =
 		true; /* Always default to steam mode, it can be changed by userspace attr */
+	ally_x->rc74xa = dmi_match(DMI_BOARD_NAME, "RC74XA");
 
 	max_output_report_size = sizeof(struct ally_x_input_report);
 	report = devm_kzalloc(&hdev->dev, sizeof(*report), GFP_KERNEL);
