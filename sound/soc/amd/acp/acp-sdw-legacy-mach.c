@@ -262,7 +262,7 @@ static int create_sdw_dailink(struct snd_soc_card *card,
 			return -ENOMEM;
 
 		list_for_each_entry(soc_end, &soc_dai->endpoints, list) {
-			if (!soc_end->dai_info->direction[stream])
+			if (!soc_end->direction[stream])
 				continue;
 
 			int link_num = ffs(soc_end->link_mask) - 1;
