@@ -114,6 +114,7 @@ struct asoc_sdw_endpoint {
 	const char *codec_name;
 	const char *name_prefix;
 	bool include_sidecar;
+	bool direction[2]; /* dai_info direction limited by the DisCo port lists */
 
 	struct asoc_sdw_codec_info *codec_info;
 	const struct asoc_sdw_dai_info *dai_info;
