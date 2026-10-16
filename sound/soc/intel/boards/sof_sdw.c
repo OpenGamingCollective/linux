@@ -973,7 +973,7 @@ static int create_sdw_dailink(struct snd_soc_card *card,
 			return -ENOMEM;
 
 		list_for_each_entry(sof_end, &sof_dai->endpoints, list) {
-			if (!sof_end->dai_info->direction[stream])
+			if (!sof_end->direction[stream])
 				continue;
 
 			if (cur_link != sof_end->link_mask) {
