@@ -1991,6 +1991,32 @@ put_device:
 	return ret;
 }
 
+/* A DisCo port list that is present but empty means the stream cannot run */
+static bool asoc_sdw_has_ports(struct device *dev,
+			       const struct snd_soc_acpi_link_adr *adr_link,
+			       int adr_index, int stream)
+{
+	const char *prop = stream == SNDRV_PCM_STREAM_PLAYBACK ?
+			   "mipi-sdw-sink-port-list" : "mipi-sdw-source-port-list";
+	const char *sdw_codec_name;
+	struct device *sdw_dev;
+	u32 ports;
+	int ret;
+
+	sdw_codec_name = _asoc_sdw_get_codec_name(dev, adr_link, adr_index);
+	if (!sdw_codec_name)
+		return true;
+
+	sdw_dev = bus_find_device_by_name(&sdw_bus_type, NULL, sdw_codec_name);
+	if (!sdw_dev)
+		return true;
+
+	ret = device_property_read_u32(sdw_dev, prop, &ports);
+	put_device(sdw_dev);
+
+	return ret || ports;
+}
+
 int asoc_sdw_parse_sdw_endpoints(struct device *dev,
 				 struct asoc_sdw_mc_private *ctx,
 				 struct snd_soc_aux_dev *soc_aux,
@@ -2113,12 +2139,16 @@ int asoc_sdw_parse_sdw_endpoints(struct device *dev,
 					}
 				}
 
+				for_each_pcm_streams(stream)
+					soc_end->direction[stream] = dai_info->direction[stream] &&
+						asoc_sdw_has_ports(dev, adr_link, i, stream);
+
 				dev_dbg(dev,
 					"Add dev: %d, 0x%llx end: %d, dai: %d, %c/%c to %s: %d\n",
 					ffs(adr_link->mask) - 1, adr_dev->adr,
 					adr_end->num, dai_info->dai_type,
-					dai_info->direction[SNDRV_PCM_STREAM_PLAYBACK] ? 'P' : '-',
-					dai_info->direction[SNDRV_PCM_STREAM_CAPTURE] ? 'C' : '-',
+					soc_end->direction[SNDRV_PCM_STREAM_PLAYBACK] ? 'P' : '-',
+					soc_end->direction[SNDRV_PCM_STREAM_CAPTURE] ? 'C' : '-',
 					adr_end->aggregated ? "group" : "solo",
 					adr_end->group_id);
 
@@ -2139,7 +2169,7 @@ int asoc_sdw_parse_sdw_endpoints(struct device *dev,
 						return -EINVAL;
 					}
 
-					if (dai_info->direction[stream]) {
+					if (soc_end->direction[stream]) {
 						num_dais += !soc_dai->num_devs[stream];
 						soc_dai->num_devs[stream]++;
 						soc_dai->link_mask[stream] |= adr_link->mask;
