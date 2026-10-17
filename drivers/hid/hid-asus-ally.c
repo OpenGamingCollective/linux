@@ -597,7 +597,7 @@ static ssize_t gamepad_vibration_intensity_store(struct device *dev,
 	if (sscanf(buf, "%d %d", &left, &right) != 2)
 		return -EINVAL;
 
-	if (left > 64 || right > 64)
+	if (left > 100 || right > 100)
 		return -EINVAL;
 
 	ally_cfg->vibration_intensity[0] = left;
