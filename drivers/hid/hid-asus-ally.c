@@ -32,6 +32,7 @@
 #define FEATURE_ROG_ALLY_REPORT_SIZE 64
 #define ALLY_X_INPUT_REPORT_USB 0x0B
 #define ALLY_X_INPUT_REPORT_USB_SIZE 16
+#define ALLY_X_FF_MAX_INTENSITY 100
 
 #define ROG_ALLY_REPORT_SIZE 64
 #define ROG_ALLY_X_MIN_MCU 313
@@ -1525,8 +1526,10 @@ static int ally_x_play_effect(struct input_dev *idev, void *data, struct ff_effe
 		return 0;
 
 	spin_lock_irqsave(&ally_x->lock, flags);
-	ally_x->ff_packet->ff.magnitude_strong = effect->u.rumble.strong_magnitude / 512;
-	ally_x->ff_packet->ff.magnitude_weak = effect->u.rumble.weak_magnitude / 512;
+	ally_x->ff_packet->ff.magnitude_strong =
+		effect->u.rumble.strong_magnitude * ALLY_X_FF_MAX_INTENSITY / U16_MAX;
+	ally_x->ff_packet->ff.magnitude_weak =
+		effect->u.rumble.weak_magnitude * ALLY_X_FF_MAX_INTENSITY / U16_MAX;
 	ally_x->update_ff = true;
 	spin_unlock_irqrestore(&ally_x->lock, flags);
 
