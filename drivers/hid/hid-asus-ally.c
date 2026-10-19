@@ -2239,9 +2239,10 @@ static void ally_hid_remove(struct hid_device *hdev)
 static int ally_hid_resume(struct hid_device *hdev)
 {
 	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	int ep = get_endpoint_address(hdev);
 	int err;
 
-	if (!ally_cfg)
+	if (!ally_cfg || ep != ROG_ALLY_CFG_INTF_IN)
 		return 0;
 
 	err = _gamepad_apply_all(hdev, ally_cfg);
