@@ -2245,7 +2245,11 @@ static int ally_hid_resume(struct hid_device *hdev)
 	if (!ally_cfg || ep != ROG_ALLY_CFG_INTF_IN)
 		return 0;
 
-	err = _gamepad_apply_all(hdev, ally_cfg);
+	/*
+	 * The MCU can lose its mode across s2idle without a USB reset.
+	 * Restore the cached mode and reapply the mappings and axis settings.
+	 */
+	err = _gamepad_set_mode(hdev, ally_cfg, ally_cfg->mode);
 	if (err)
 		return err;
 
