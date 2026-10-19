@@ -513,17 +513,22 @@ static int ally_gamepad_check_ready(struct hid_device *hdev)
 		ret = asus_dev_get_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
 		if (ret < 0)
 			hid_dbg(hdev, "ROG Ally check failed get report: %d\n", ret);
-
-		ret = hidbuf[2] == xpad_cmd_check_ready;
-		if (ret)
+		else if (hidbuf[2] == xpad_cmd_check_ready)
 			break;
 		usleep_range(
 			1000,
 			2000); /* don't spam the entire loop in less than USB response time */
 	}
 
+	/*
+	 * Return a transport error from the last attempt, but not an MCU that is
+	 * merely slow to report ready: callers still send their command, as the
+	 * MCU may accept it anyway.
+	 */
 	if (count == READY_MAX_TRIES)
 		hid_warn(hdev, "ROG Ally never responded with a ready\n");
+	if (ret > 0)
+		ret = 0;
 
 	kfree(hidbuf);
 	return ret;
