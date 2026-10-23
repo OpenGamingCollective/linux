@@ -7,6 +7,7 @@
 
 #include "linux/compiler_attributes.h"
 #include "linux/device.h"
+#include <linux/dmi.h>
 #include <linux/platform_data/x86/asus-wmi.h>
 #include <linux/platform_device.h>
 #include "linux/pm.h"
@@ -31,6 +32,7 @@
 #define FEATURE_ROG_ALLY_REPORT_SIZE 64
 #define ALLY_X_INPUT_REPORT_USB 0x0B
 #define ALLY_X_INPUT_REPORT_USB_SIZE 16
+#define ALLY_X_FF_MAX_INTENSITY 100
 
 #define ROG_ALLY_REPORT_SIZE 64
 #define ROG_ALLY_X_MIN_MCU 313
@@ -373,6 +375,8 @@ struct ally_x_device {
 	bool update_qam_btn;
 	/* Set if the QAM and AC buttons emit Xbox and Xbox+A */
 	bool qam_btns_steam_mode;
+	/* Set on the ROG Xbox Ally X20, whose MCU uses different QAM and AC codes */
+	bool rc74xa;
 	bool update_ff;
 };
 
@@ -509,17 +513,22 @@ static int ally_gamepad_check_ready(struct hid_device *hdev)
 		ret = asus_dev_get_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
 		if (ret < 0)
 			hid_dbg(hdev, "ROG Ally check failed get report: %d\n", ret);
-
-		ret = hidbuf[2] == xpad_cmd_check_ready;
-		if (ret)
+		else if (hidbuf[2] == xpad_cmd_check_ready)
 			break;
 		usleep_range(
 			1000,
 			2000); /* don't spam the entire loop in less than USB response time */
 	}
 
+	/*
+	 * Return a transport error from the last attempt, but not an MCU that is
+	 * merely slow to report ready: callers still send their command, as the
+	 * MCU may accept it anyway.
+	 */
 	if (count == READY_MAX_TRIES)
 		hid_warn(hdev, "ROG Ally never responded with a ready\n");
+	if (ret > 0)
+		ret = 0;
 
 	kfree(hidbuf);
 	return ret;
@@ -593,7 +602,7 @@ static ssize_t gamepad_vibration_intensity_store(struct device *dev,
 	if (sscanf(buf, "%d %d", &left, &right) != 2)
 		return -EINVAL;
 
-	if (left > 64 || right > 64)
+	if (left > 100 || right > 100)
 		return -EINVAL;
 
 	ally_cfg->vibration_intensity[0] = left;
@@ -1459,9 +1468,12 @@ static int ally_x_raw_event(struct ally_x_device *ally_x, struct hid_report *rep
 	 * use the events unless we grab those and use them here. Only works for Ally X.
 	 */
 	else if (data[0] == 0x5A) {
+		bool qam_short = ally_x->rc74xa ? data[1] == 0xA0 :
+						  data[1] == 0x38 || data[1] == 0x93;
+
 		if (ally_x->qam_btns_steam_mode) {
 			spin_lock_irqsave(&ally_x->lock, flags);
-			if ((data[1] == 0x38 || data[1] == 0x93) && !ally_x->update_qam_btn) {
+			if (qam_short && !ally_x->update_qam_btn) {
 				ally_x->update_qam_btn = true;
 				if (ally_x->output_worker_initialized)
 					schedule_work(&ally_x->output_worker);
@@ -1471,12 +1483,17 @@ static int ally_x_raw_event(struct ally_x_device *ally_x, struct hid_report *rep
 			input_report_key(ally_x->input, BTN_MODE, data[1] == 0xA6);
 		} else {
 			input_report_key(ally_x->input, KEY_F16, data[1] == 0xA6);
-			input_report_key(ally_x->input, KEY_PROG1, data[1] == 0x38 || data[1] == 0x93);
+			input_report_key(ally_x->input, KEY_PROG1, qam_short);
 		}
 		/* QAM long press */
 		input_report_key(ally_x->input, KEY_F17, data[1] == 0xA7);
 		/* QAM long press released */
 		input_report_key(ally_x->input, KEY_F18, data[1] == 0xA8);
+		/* RC74XA AC and QAM long presses */
+		if (ally_x->rc74xa) {
+			input_report_key(ally_x->input, KEY_F21, data[1] == 0x38);
+			input_report_key(ally_x->input, KEY_F22, data[1] == 0xA4);
+		}
 	}
 
 	input_sync(ally_x->input);
@@ -1514,8 +1531,10 @@ static int ally_x_play_effect(struct input_dev *idev, void *data, struct ff_effe
 		return 0;
 
 	spin_lock_irqsave(&ally_x->lock, flags);
-	ally_x->ff_packet->ff.magnitude_strong = effect->u.rumble.strong_magnitude / 512;
-	ally_x->ff_packet->ff.magnitude_weak = effect->u.rumble.weak_magnitude / 512;
+	ally_x->ff_packet->ff.magnitude_strong =
+		effect->u.rumble.strong_magnitude * ALLY_X_FF_MAX_INTENSITY / U16_MAX;
+	ally_x->ff_packet->ff.magnitude_weak =
+		effect->u.rumble.weak_magnitude * ALLY_X_FF_MAX_INTENSITY / U16_MAX;
 	ally_x->update_ff = true;
 	spin_unlock_irqrestore(&ally_x->lock, flags);
 
@@ -1605,6 +1624,8 @@ static struct input_dev *ally_x_setup_input(struct hid_device *hdev)
 	input_set_capability(input, EV_KEY, KEY_F16);
 	input_set_capability(input, EV_KEY, KEY_F17);
 	input_set_capability(input, EV_KEY, KEY_F18);
+	input_set_capability(input, EV_KEY, KEY_F21);
+	input_set_capability(input, EV_KEY, KEY_F22);
 
 	input_set_capability(input, EV_FF, FF_RUMBLE);
 	input_ff_create_memless(input, NULL, ally_x_play_effect);
@@ -1658,6 +1679,7 @@ static struct ally_x_device *ally_x_create(struct hid_device *hdev)
 	ally_x->output_worker_initialized = true;
 	ally_x->qam_btns_steam_mode =
 		true; /* Always default to steam mode, it can be changed by userspace attr */
+	ally_x->rc74xa = dmi_match(DMI_BOARD_NAME, "RC74XA");
 
 	max_output_report_size = sizeof(struct ally_x_input_report);
 	report = devm_kzalloc(&hdev->dev, sizeof(*report), GFP_KERNEL);
@@ -2222,12 +2244,17 @@ static void ally_hid_remove(struct hid_device *hdev)
 static int ally_hid_resume(struct hid_device *hdev)
 {
 	struct ally_gamepad_cfg *ally_cfg = drvdata.gamepad_cfg;
+	int ep = get_endpoint_address(hdev);
 	int err;
 
-	if (!ally_cfg)
+	if (!ally_cfg || ep != ROG_ALLY_CFG_INTF_IN)
 		return 0;
 
-	err = _gamepad_apply_all(hdev, ally_cfg);
+	/*
+	 * The MCU can lose its mode across s2idle without a USB reset.
+	 * Restore the cached mode and reapply the mappings and axis settings.
+	 */
+	err = _gamepad_set_mode(hdev, ally_cfg, ally_cfg->mode);
 	if (err)
 		return err;
 
