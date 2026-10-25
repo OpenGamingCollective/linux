@@ -6434,3 +6434,24 @@ static void pci_mask_replay_timer_timeout(struct pci_dev *pdev)
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9750, pci_mask_replay_timer_timeout);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9755, pci_mask_replay_timer_timeout);
 #endif
+
+/*
+ * MSI Claw A1M: during s2idle the platform removes power from the WiFi slot
+ * (D3cold). The Killer BE1750 (Intel BE200, 8086:272b) fails to resume from
+ * that state: the PCIe link does not retrain ("Data Link Layer Link Active
+ * not set in 100 msec") and every device register reads back as 0xffffffff,
+ * so the card disappears from the bus and the machine must be power-cycled.
+ *
+ * Keeping the device in D3hot with the link in L1.2 during system sleep makes
+ * suspend and resume work reliably: the package still reaches >99% S0ix
+ * residency and the card survives.
+ */
+static void quirk_msi_claw_be200_d3cold(struct pci_dev *pdev)
+{
+	if (!dmi_match(DMI_BOARD_NAME, "MS-1T41"))
+		return;
+
+	pci_d3cold_disable(pdev);
+	pci_info(pdev, "disabling D3cold: slot power removal during s2idle prevents resume on this system");
+}
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x272b, quirk_msi_claw_be200_d3cold);
