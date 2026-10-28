@@ -3803,7 +3803,7 @@ static void dm_arm_vblank_event_pre_programming(struct amdgpu_crtc *acrtc,
  * this at commit time, not in atomic check: by then the previous commit
  * has finished writing it.
  */
-static void
+STATIC_IFN_KUNIT void
 dm_plane_inherit_flip_time(struct dc_plane_state *dc_plane_state,
 			   struct drm_plane_state *old_plane_state,
 			   struct drm_plane_state *new_plane_state)
@@ -3815,6 +3815,7 @@ dm_plane_inherit_flip_time(struct dc_plane_state *dc_plane_state,
 	    old_plane_state->crtc == new_plane_state->crtc)
 		dc_plane_state->time = old_dc_plane_state->time;
 }
+EXPORT_IF_KUNIT(dm_plane_inherit_flip_time);
 
 static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 				    struct drm_device *dev,
