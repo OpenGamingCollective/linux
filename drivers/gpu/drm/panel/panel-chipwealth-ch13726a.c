@@ -64,7 +64,8 @@ static int ch13726a_on(struct ch13726a_panel *ctx)
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
 	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xf0, 0x50);
-	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xb9, 0x00);
+	/* 0x00 (the vendor "bypass ram" sequence) renders near-black as green */
+	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xb9, 0x11);
 
 	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
 
