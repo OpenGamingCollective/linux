@@ -15,6 +15,7 @@
 
 #include <linux/acpi.h>
 #include <linux/backlight.h>
+#include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
@@ -256,6 +257,7 @@ struct asus_wmi {
 	int tpd_led_wk;
 	struct led_classdev kbd_led;
 	int kbd_led_wk;
+	int kbd_led_last_level;
 	bool kbd_led_notify;
 	bool kbd_led_avail;
 	bool kbd_led_registered;
@@ -309,6 +311,7 @@ struct asus_wmi {
 
 	u32 kbd_rgb_dev;
 	bool kbd_rgb_state_available;
+	u32 kbd_rgb_state_flags;
 	bool oobe_state_available;
 
 	u8 throttle_thermal_policy_mode;
@@ -318,6 +321,9 @@ struct asus_wmi {
 	bool gpu_fan_curve_available;
 	bool mid_fan_curve_available;
 	struct fan_curve_data custom_fan_curves[3];
+	bool fan_curve_pin_on_suspend;
+	bool fan_curves_pinned;
+	struct delayed_work fan_curve_release_work;
 
 	struct device *ppdev;
 	bool platform_profile_support;
@@ -343,6 +349,7 @@ struct asus_wmi {
 
 /* Global to allow setting externally without requiring driver data */
 static enum asus_ally_mcu_hack use_ally_mcu_hack = ASUS_WMI_ALLY_MCU_HACK_INIT;
+static struct asus_wmi *asus_hotk;
 
 #if IS_ENABLED(CONFIG_ASUS_WMI_DEPRECATED_ATTRS)
 static void asus_wmi_show_deprecated(void)
@@ -1047,6 +1054,27 @@ static DEVICE_ATTR_RW(gpu_mux_mode);
 #endif /* IS_ENABLED(CONFIG_ASUS_WMI_DEPRECATED_ATTRS) */
 
 /* TUF Laptop Keyboard RGB Modes **********************************************/
+
+/* Command IDs passed in arg0 byte 0 for TUF RGB WMI methods */
+#define ASUS_WMI_TUF_RGB_STATE_CMD_ID	0xbd
+
+/* Bit mask for the save-to-BIOS command flag in kbd_rgb_state_store (arg0 bit 10) */
+#define TUF_RGB_STATE_SAVE	GENMASK(10, 10)
+
+/* Bit masks for kbd_rgb_state_store flags field (arg0 bits [23:16]) */
+#define TUF_RGB_STATE_BOOT	GENMASK(17, 17)
+#define TUF_RGB_STATE_AWAKE	GENMASK(19, 19)
+#define TUF_RGB_STATE_SLEEP	GENMASK(21, 21)
+#define TUF_RGB_STATE_KEYBOARD	GENMASK(23, 23)
+
+/* Bit masks for kbd_rgb_mode_store fields */
+#define TUF_RGB_MODE_CMD	GENMASK(7, 0)
+#define TUF_RGB_MODE_MODE	GENMASK(15, 8)
+#define TUF_RGB_MODE_RED	GENMASK(23, 16)
+#define TUF_RGB_MODE_GREEN	GENMASK(31, 24)
+#define TUF_RGB_MODE_BLUE	GENMASK(7, 0)
+#define TUF_RGB_MODE_SPEED	GENMASK(15, 8)
+
 static ssize_t kbd_rgb_mode_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
@@ -1093,7 +1121,12 @@ static ssize_t kbd_rgb_mode_store(struct device *dev,
 	}
 
 	err = asus_wmi_evaluate_method3(ASUS_WMI_METHODID_DEVS, asus->kbd_rgb_dev,
-			cmd | (mode << 8) | (r << 16) | (g << 24), b | (speed << 8), NULL);
+			FIELD_PREP(TUF_RGB_MODE_CMD, cmd) |
+			FIELD_PREP(TUF_RGB_MODE_MODE, mode) |
+			FIELD_PREP(TUF_RGB_MODE_RED, r) |
+			FIELD_PREP(TUF_RGB_MODE_GREEN, g),
+			FIELD_PREP(TUF_RGB_MODE_BLUE, b) |
+			FIELD_PREP(TUF_RGB_MODE_SPEED, speed), NULL);
 	if (err)
 		return err;
 
@@ -1119,30 +1152,35 @@ static ssize_t kbd_rgb_state_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
-	u32 flags, cmd, boot, awake, sleep, keyboard;
+	struct led_classdev *led = dev_get_drvdata(dev);
+	struct asus_wmi *asus = container_of(led, struct asus_wmi, kbd_led);
+	u32 cmd, boot, awake, sleep, keyboard;
+	u32 arg0;
 	int err;
 
 	if (sscanf(buf, "%d %d %d %d %d", &cmd, &boot, &awake, &sleep, &keyboard) != 5)
 		return -EINVAL;
 
+	arg0 = ASUS_WMI_TUF_RGB_STATE_CMD_ID;
+
 	if (cmd)
-		cmd = BIT(2);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_SAVE, 1);
 
-	flags = 0;
 	if (boot)
-		flags |= BIT(1);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_BOOT, 1);
 	if (awake)
-		flags |= BIT(3);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_AWAKE, 1);
 	if (sleep)
-		flags |= BIT(5);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_SLEEP, 1);
 	if (keyboard)
-		flags |= BIT(7);
+		arg0 |= FIELD_PREP(TUF_RGB_STATE_KEYBOARD, 1);
 
-	/* 0xbd is the required default arg0 for the method. Nothing happens otherwise */
 	err = asus_wmi_evaluate_method3(ASUS_WMI_METHODID_DEVS,
-			ASUS_WMI_DEVID_TUF_RGB_STATE, 0xbd | cmd << 8 | (flags << 16), 0, NULL);
+			ASUS_WMI_DEVID_TUF_RGB_STATE, arg0, 0, NULL);
 	if (err)
 		return err;
+
+	asus->kbd_rgb_state_flags = arg0;
 
 	return count;
 }
@@ -1916,8 +1954,11 @@ static void do_kbd_led_set(struct led_classdev *led_cdev, int value)
 
 	asus = container_of(led_cdev, struct asus_wmi, kbd_led);
 
-	scoped_guard(spinlock_irqsave, &asus_ref.lock)
+	scoped_guard(spinlock_irqsave, &asus_ref.lock) {
 		asus->kbd_led_wk = clamp_val(value, 0, ASUS_EV_MAX_BRIGHTNESS);
+		if (asus->kbd_led_wk > 0)
+			asus->kbd_led_last_level = asus->kbd_led_wk;
+	}
 
 	if (asus->kbd_led_avail)
 		kbd_led_update(asus);
@@ -2127,6 +2168,7 @@ static int asus_wmi_led_init(struct asus_wmi *asus)
 
 	if (asus->kbd_led_avail) {
 		asus->kbd_led_wk = led_val;
+		asus->kbd_led_last_level = led_val > 0 ? led_val : ASUS_EV_MAX_BRIGHTNESS;
 		if (num_rgb_groups != 0)
 			asus->kbd_led.groups = kbd_rgb_mode_groups;
 	} else {
@@ -3714,6 +3756,33 @@ static int fan_curve_write(struct asus_wmi *asus,
 					 arg1, arg2, arg3, arg4, &ret);
 }
 
+/*
+ * A fan curve is a set of points the firmware interpolates between, so it
+ * only makes sense if neither temperature nor PWM ever decreases along it.
+ */
+static int fan_curve_validate(struct device *dev, struct fan_curve_data *data)
+{
+	u8 *percents = data->percents;
+	u8 *temps = data->temps;
+	int i;
+
+	for (i = 1; i < FAN_CURVE_POINTS; i++) {
+		if (temps[i] < temps[i - 1]) {
+			dev_warn(dev, "fan curve: temperature decreases at point %d (%u < %u)\n",
+				 i, temps[i], temps[i - 1]);
+			return -EINVAL;
+		}
+
+		if (percents[i] < percents[i - 1]) {
+			dev_warn(dev, "fan curve: pwm decreases at point %d (%u < %u)\n",
+				 i, percents[i], percents[i - 1]);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 static ssize_t fan_curve_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
@@ -3798,6 +3867,11 @@ static ssize_t fan_curve_enable_store(struct device *dev,
 	}
 
 	if (data->enabled) {
+		err = fan_curve_validate(dev, data);
+		if (err) {
+			data->enabled = false;
+			return err;
+		}
 		err = fan_curve_write(asus, data);
 		if (err)
 			return err;
@@ -4022,6 +4096,63 @@ static const struct attribute_group asus_fan_curve_attr_group = {
 };
 __ATTRIBUTE_GROUPS(asus_fan_curve_attr);
 
+/* Keep the pin until the EC has run its first post-resume fan update */
+#define ASUS_FAN_CURVE_RELEASE_MS	3000
+
+static bool asus_fan_curve_any_enabled(struct asus_wmi *asus)
+{
+	struct fan_curve_data *curves = asus->custom_fan_curves;
+
+	return (asus->cpu_fan_curve_available && curves[FAN_CURVE_DEV_CPU].enabled) ||
+	       (asus->gpu_fan_curve_available && curves[FAN_CURVE_DEV_GPU].enabled) ||
+	       (asus->mid_fan_curve_available && curves[FAN_CURVE_DEV_MID].enabled);
+}
+
+/* EC resumes from a stale auto fan duty unless a custom curve is active */
+static void asus_fan_curves_suspend_pin(struct asus_wmi *asus)
+{
+	bool available[] = {
+		asus->cpu_fan_curve_available,
+		asus->gpu_fan_curve_available,
+		asus->mid_fan_curve_available,
+	};
+	struct fan_curve_data saved, *data;
+	int i, err = 0;
+
+	if (asus_fan_curve_any_enabled(asus))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(available) && !err; i++) {
+		if (!available[i])
+			continue;
+
+		/* Keep any unapplied user curve data */
+		data = &asus->custom_fan_curves[i];
+		saved = *data;
+		err = fan_curve_get_factory_default(asus, data->device_id);
+		if (!err) {
+			data->enabled = true;
+			err = fan_curve_write(asus, data);
+		}
+		*data = saved;
+	}
+
+	/* A partial pin freezes the unpinned fan, so release on failure */
+	if (err)
+		throttle_thermal_policy_write(asus);
+	asus->fan_curves_pinned = !err;
+}
+
+static void asus_fan_curves_release_work(struct work_struct *work)
+{
+	struct asus_wmi *asus = container_of(work, struct asus_wmi,
+					     fan_curve_release_work.work);
+
+	asus->fan_curves_pinned = false;
+	if (!asus_fan_curve_any_enabled(asus))
+		throttle_thermal_policy_write(asus);
+}
+
 /*
  * Must be initialised after throttle_thermal_policy_dev is set as
  * we check the status of throttle_thermal_policy_dev during init.
@@ -4061,6 +4192,12 @@ static int asus_wmi_custom_fan_curve_init(struct asus_wmi *asus)
 		&& !asus->mid_fan_curve_available)
 		return 0;
 
+	asus->fan_curve_pin_on_suspend = asus->throttle_thermal_policy_dev &&
+					 dmi_match(DMI_BOARD_NAME, "RC73XA");
+	if (asus->fan_curve_pin_on_suspend)
+		INIT_DELAYED_WORK(&asus->fan_curve_release_work,
+				  asus_fan_curves_release_work);
+
 	hwmon = devm_hwmon_device_register_with_groups(
 		dev, "asus_custom_fan_curve", asus, asus_fan_curve_attr_groups);
 
@@ -4072,6 +4209,30 @@ static int asus_wmi_custom_fan_curve_init(struct asus_wmi *asus)
 
 	return 0;
 }
+
+/*
+ * Returns true if at least one custom fan curve is active
+ *
+ * Used by asus-armoury to check if PPT writes will be accepted by the BIOS
+ * on models that require an active fan curve for TDP changes.
+ */
+bool asus_wmi_custom_fan_curve_is_enabled(void)
+{
+	struct fan_curve_data *curves;
+	struct asus_wmi *asus;
+
+	guard(spinlock_irqsave)(&asus_ref.lock);
+	asus = asus_ref.asus;
+	if (!asus)
+		return false;
+
+	curves = asus->custom_fan_curves;
+
+	return (asus->cpu_fan_curve_available && curves[FAN_CURVE_DEV_CPU].enabled) ||
+	       (asus->gpu_fan_curve_available && curves[FAN_CURVE_DEV_GPU].enabled) ||
+	       (asus->mid_fan_curve_available && curves[FAN_CURVE_DEV_MID].enabled);
+}
+EXPORT_SYMBOL_NS_GPL(asus_wmi_custom_fan_curve_is_enabled, "ASUS_WMI");
 
 /* Throttle thermal policy ****************************************************/
 static int throttle_thermal_policy_write(struct asus_wmi *asus)
@@ -5094,6 +5255,7 @@ static int asus_wmi_add(struct platform_device *pdev)
 	asus->platform_device = pdev;
 	wdrv->platform_device = pdev;
 	platform_set_drvdata(asus->platform_device, asus);
+	asus_hotk = asus;
 
 	if (wdrv->detect_quirks)
 		wdrv->detect_quirks(asus->driver);
@@ -5129,7 +5291,17 @@ static int asus_wmi_add(struct platform_device *pdev)
 
 	asus->egpu_enable_available = asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_EGPU);
 	asus->dgpu_disable_available = asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_DGPU);
-	asus->kbd_rgb_state_available = asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_TUF_RGB_STATE);
+	asus->kbd_rgb_state_available =
+		asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_TUF_RGB_STATE) ||
+		asus->driver->quirks->kbd_rgb_state_available;
+	if (asus->kbd_rgb_state_available) {
+		asus->kbd_rgb_state_flags =
+			ASUS_WMI_TUF_RGB_STATE_CMD_ID |
+			FIELD_PREP(TUF_RGB_STATE_BOOT, 1) |
+			FIELD_PREP(TUF_RGB_STATE_AWAKE, 1) |
+			FIELD_PREP(TUF_RGB_STATE_SLEEP, 1) |
+			FIELD_PREP(TUF_RGB_STATE_KEYBOARD, 1);
+	}
 
 	if (asus_wmi_dev_is_present(asus, ASUS_WMI_DEVID_MINI_LED_MODE))
 		asus->mini_led_dev_id = ASUS_WMI_DEVID_MINI_LED_MODE;
@@ -5270,6 +5442,7 @@ static void asus_wmi_remove(struct platform_device *device)
 	struct asus_wmi *asus;
 
 	asus = platform_get_drvdata(device);
+	asus_hotk = NULL;
 	if (asus->driver->i8042_filter)
 		i8042_remove_filter(asus->driver->i8042_filter);
 	wmi_remove_notify_handler(asus->driver->event_guid);
@@ -5281,6 +5454,8 @@ static void asus_wmi_remove(struct platform_device *device)
 	asus_wmi_debugfs_exit(asus);
 	asus_wmi_sysfs_exit(asus->platform_device);
 	asus_fan_set_auto(asus);
+	if (asus->fan_curve_pin_on_suspend)
+		cancel_delayed_work_sync(&asus->fan_curve_release_work);
 	throttle_thermal_policy_set_default(asus);
 	asus_wmi_battery_exit(asus);
 
@@ -5308,9 +5483,24 @@ static int asus_hotk_thaw(struct device *device)
 	return 0;
 }
 
+static int asus_hotk_suspend(struct device *device)
+{
+	struct asus_wmi *asus = dev_get_drvdata(device);
+
+	if (asus->fan_curve_pin_on_suspend) {
+		cancel_delayed_work_sync(&asus->fan_curve_release_work);
+		asus_fan_curves_suspend_pin(asus);
+	}
+	return 0;
+}
+
 static int asus_hotk_resume(struct device *device)
 {
 	struct asus_wmi *asus = dev_get_drvdata(device);
+
+	if (asus->fan_curves_pinned)
+		schedule_delayed_work(&asus->fan_curve_release_work,
+				      msecs_to_jiffies(ASUS_FAN_CURVE_RELEASE_MS));
 
 	if (!IS_ERR_OR_NULL(asus->kbd_led.dev))
 		kbd_led_update(asus);
@@ -5370,17 +5560,54 @@ static int asus_hotk_restore(struct device *device)
 	return 0;
 }
 
+static void asus_tuf_reassert_sleep_rgb_state(struct asus_wmi *asus)
+{
+	if (asus && asus->driver->quirks->kbd_rgb_state_available &&
+	    asus->kbd_rgb_state_available &&
+	    (asus->kbd_rgb_state_flags & TUF_RGB_STATE_SLEEP)) {
+		int level;
+		u32 arg0;
+
+		/*
+		 * Re-assert keyboard backlight using the last user-configured
+		 * brightness level (falling back to max brightness) with the
+		 * light-on bit (0x80) set.
+		 */
+		level = asus->kbd_led_last_level ?
+			asus->kbd_led_last_level : ASUS_EV_MAX_BRIGHTNESS;
+		asus_wmi_set_devstate(ASUS_WMI_DEVID_KBD_BACKLIGHT,
+				      0x80 | (level & 0x7f), NULL);
+
+		/* Re-assert the last user-configured TUF RGB power state */
+		arg0 = asus->kbd_rgb_state_flags |
+		       FIELD_PREP(TUF_RGB_STATE_SAVE, 1);
+		asus_wmi_evaluate_method3(ASUS_WMI_METHODID_DEVS,
+					  ASUS_WMI_DEVID_TUF_RGB_STATE,
+					  arg0, 0, NULL);
+	}
+}
+
 static int asus_hotk_prepare(struct device *device)
 {
+	struct asus_wmi *asus = dev_get_drvdata(device);
+
 	if (use_ally_mcu_hack == ASUS_WMI_ALLY_MCU_HACK_ENABLED) {
 		acpi_execute_simple_method(NULL, ASUS_USB0_PWR_EC0_CSEE,
 					   ASUS_USB0_PWR_EC0_CSEE_OFF);
 		msleep(ASUS_USB0_PWR_EC0_CSEE_WAIT);
 	}
+
+	asus_tuf_reassert_sleep_rgb_state(asus);
+
 	return 0;
 }
 
 #if defined(CONFIG_SUSPEND)
+static void asus_s2idle_prepare(void)
+{
+	asus_tuf_reassert_sleep_rgb_state(asus_hotk);
+}
+
 static void asus_ally_s2idle_restore(void)
 {
 	if (use_ally_mcu_hack == ASUS_WMI_ALLY_MCU_HACK_ENABLED) {
@@ -5390,20 +5617,20 @@ static void asus_ally_s2idle_restore(void)
 	}
 }
 
-/* Use only for Ally devices due to the wake_on_ac */
-static struct acpi_s2idle_dev_ops asus_ally_s2idle_dev_ops = {
+static struct acpi_s2idle_dev_ops asus_s2idle_dev_ops = {
+	.prepare = asus_s2idle_prepare,
 	.restore = asus_ally_s2idle_restore,
 };
 
 static void asus_s2idle_check_register(void)
 {
-	if (acpi_register_lps0_dev(&asus_ally_s2idle_dev_ops))
+	if (acpi_register_lps0_dev(&asus_s2idle_dev_ops))
 		pr_warn("failed to register LPS0 sleep handler in asus-wmi\n");
 }
 
 static void asus_s2idle_check_unregister(void)
 {
-	acpi_unregister_lps0_dev(&asus_ally_s2idle_dev_ops);
+	acpi_unregister_lps0_dev(&asus_s2idle_dev_ops);
 }
 #else
 static void asus_s2idle_check_register(void) {}
@@ -5413,6 +5640,7 @@ static void asus_s2idle_check_unregister(void) {}
 static const struct dev_pm_ops asus_pm_ops = {
 	.thaw = asus_hotk_thaw,
 	.restore = asus_hotk_restore,
+	.suspend = asus_hotk_suspend,
 	.resume = asus_hotk_resume,
 	.prepare = asus_hotk_prepare,
 };
