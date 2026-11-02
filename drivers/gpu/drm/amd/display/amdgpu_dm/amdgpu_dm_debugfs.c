@@ -3158,6 +3158,35 @@ static const struct file_operations hdmi_automation_debugfs_fops = {
 	.llseek = default_llseek
 };
 
+/* 0: EDID behavior, 1: force HDMI VRR, 2: disable VRR. */
+static int vrr_override_set(void *data, u64 val)
+{
+	struct amdgpu_dm_connector *connector = data;
+
+	if (val > AMDGPU_DM_VRR_OVERRIDE_DISABLE_VRR)
+		return -EINVAL;
+
+	if (connector->vrr_override == val)
+		return 0;
+
+	connector->vrr_override = val;
+	drm_kms_helper_connector_hotplug_event(&connector->base);
+
+	return 0;
+}
+
+static int vrr_override_get(void *data, u64 *val)
+{
+	struct amdgpu_dm_connector *connector = data;
+
+	*val = connector->vrr_override;
+
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(vrr_override_fops, vrr_override_get,
+			 vrr_override_set, "%llu\n");
+
 static const struct {
 	char *name;
 	const struct file_operations *fops;
@@ -3189,6 +3218,7 @@ static const struct {
 	char *name;
 	const struct file_operations *fops;
 } hdmi_debugfs_entries[] = {
+		{"vrr_override", &vrr_override_fops},
 		{"hdcp_sink_capability", &hdcp_sink_capability_fops},
 		{"hdmi_cec_state", &hdmi_cec_state_fops},
 		{"hdmi_automation", &hdmi_automation_debugfs_fops}
