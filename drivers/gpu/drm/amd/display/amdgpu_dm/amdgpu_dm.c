@@ -426,8 +426,6 @@ static int amdgpu_dm_init_power_module(struct amdgpu_display_manager *dm)
 		init_data[i].use_custom_backlight_caps = false;
 		init_data[i].custom_backlight_caps_config_no = 0;
 		init_data[i].use_linear_backlight_curve = false;
-		if (amdgpu_dc_debug_mask & DC_DISABLE_CUSTOM_BRIGHTNESS_CURVE)
-			init_data[i].use_linear_backlight_curve = true;
 		init_data[i].def_varibright_enable = 0;
 		init_data[i].varibright_level = 0;
 		/*
@@ -2269,7 +2267,7 @@ static int amdgpu_dm_mode_config_init(struct amdgpu_device *adev)
 	if (r)
 		return r;
 
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_DRM_AMD_COLOR_STEAMDECK
 	if (amdgpu_dm_create_color_properties(adev))
 		return -ENOMEM;
 #endif
@@ -3830,6 +3828,13 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		struct dc_flip_addrs flip_addrs[MAX_SURFACES];
 		struct dc_stream_update stream_update;
 	} *bundle;
+
+	/*
+	 * Hack: Make unconditional.
+	 * TODO: rework with flag to gate this or keep in in active period
+	 * based on userland selection.
+	 */
+	vrr_active = true;
 
 	bundle = kzalloc_obj(*bundle);
 
