@@ -2136,6 +2136,7 @@ static struct hid_driver msi_driver = {
 	.probe		= msi_probe,
 	.remove		= msi_remove,
 	.resume		= pm_ptr(msi_resume),
+	.reset_resume	= pm_ptr(msi_resume),
 	.suspend	= pm_ptr(msi_suspend),
 };
 module_hid_driver(msi_driver);
