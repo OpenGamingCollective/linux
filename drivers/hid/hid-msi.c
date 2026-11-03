@@ -346,6 +346,7 @@ struct claw_drvdata {
 	int cmd_status;
 	u16 bcd_device;
 	u8 ep;
+	bool suspended; /* Guarded by rom_mutex and cfg_mutex */
 
 	/* Gamepad Variables */
 	enum claw_mkeys_function_index mkeys_function;
@@ -370,6 +371,7 @@ struct claw_drvdata {
 	bool rgb_registered;
 	u8 rgb_frame_count;
 	bool rgb_enabled;
+	bool rgb_dirty;
 	u8 rgb_speed;
 	u16 rgb_addr;
 };
@@ -579,6 +581,9 @@ static int __claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
 
 	lockdep_assert_held(&drvdata->cfg_mutex);
 
+	if (drvdata->suspended)
+		return -EBUSY;
+
 	/* If expecting an orphan ack, hold next event until MCU has time to clear it */
 	scoped_guard(spinlock_irqsave, &drvdata->cmd_lock)
 		orphaned = drvdata->orphan_ack_pending;
@@ -632,7 +637,7 @@ static int __claw_hw_output_report(struct hid_device *hdev, u8 index, u8 *data,
 								msecs_to_jiffies(timeout));
 
 		dev_dbg(&hdev->dev, "Remaining timeout: %u\n", ret);
-		ret = ret > 0 ? drvdata->cmd_status : ret ?: -EBUSY;
+		ret = ret > 0 ? drvdata->cmd_status : ret ?: -ETIMEDOUT;
 		if (ret)
 			goto err;
 	}
@@ -920,6 +925,9 @@ static int claw_mkey_store(struct device *dev, const char *buf, u8 mkey)
 
 set_buttons:
 	scoped_guard(mutex, &drvdata->rom_mutex) {
+		if (drvdata->suspended)
+			return -EBUSY;
+
 		ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
 					    (u8 *)&report, sizeof(report), 25);
 		if (ret)
@@ -1055,6 +1063,9 @@ static ssize_t rumble_intensity_left_store(struct device *dev,
 	report.intensity = val;
 
 	guard(mutex)(&drvdata->rom_mutex);
+	if (drvdata->suspended)
+		return -EBUSY;
+
 	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
 				    (u8 *)&report, sizeof(report), 25);
 	if (ret)
@@ -1129,6 +1140,9 @@ static ssize_t rumble_intensity_right_store(struct device *dev,
 	report.intensity = val;
 
 	guard(mutex)(&drvdata->rom_mutex);
+	if (drvdata->suspended)
+		return -EBUSY;
+
 	ret = claw_hw_output_report(hdev, CLAW_COMMAND_TYPE_WRITE_PROFILE_DATA,
 				    (u8 *)&report, sizeof(report), 25);
 	if (ret)
@@ -1280,6 +1294,11 @@ static int claw_write_rgb_state(struct claw_drvdata *drvdata)
 		return -EINVAL;
 
 	guard(mutex)(&drvdata->rom_mutex);
+	if (drvdata->suspended) {
+		drvdata->rgb_dirty = true;
+		return -EBUSY;
+	}
+
 	/* Loop through (up to) 8 pages of RGB data */
 	for (f = 0; f < drvdata->rgb_frame_count; f++) {
 		scoped_guard(spinlock_irqsave, &drvdata->frame_lock)
@@ -1304,6 +1323,8 @@ static int claw_write_rgb_state(struct claw_drvdata *drvdata)
 	 * for ACK that ill never come.
 	 */
 	ret = claw_hw_output_report(drvdata->hdev, CLAW_COMMAND_TYPE_SYNC_TO_ROM, NULL, 0, 0);
+	if (!ret)
+		drvdata->rgb_dirty = false;
 
 	return ret;
 }
@@ -1484,8 +1505,25 @@ static void claw_rgb_queue_fn(struct work_struct *work)
 	}
 
 	ret = claw_apply_rgb_state(drvdata);
-	if (ret)
+	/* -EBUSY means the device is suspended; the state is re-applied on resume */
+	if (ret && ret != -EBUSY)
 		dev_err(&drvdata->hdev->dev, "Failed to apply RGB state: %d\n", ret);
+}
+
+static int claw_rgb_schedule(struct claw_drvdata *drvdata)
+{
+	/* suspended is only written while both of these mutexes are held */
+	scoped_guard(mutex, &drvdata->rom_mutex) {
+		scoped_guard(mutex, &drvdata->cfg_mutex) {
+			if (drvdata->suspended)
+				return -EBUSY;
+
+			mod_delayed_work(system_wq, &drvdata->rgb_queue,
+					 msecs_to_jiffies(50));
+		}
+	}
+
+	return 0;
 }
 
 static ssize_t effect_store(struct device *dev,
@@ -1510,7 +1548,9 @@ static ssize_t effect_store(struct device *dev,
 	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
 		drvdata->rgb_effect = ret;
 
-	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
+	ret = claw_rgb_schedule(drvdata);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -1574,7 +1614,9 @@ static ssize_t enabled_store(struct device *dev,
 	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
 		drvdata->rgb_enabled = val;
 
-	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
+	ret = claw_rgb_schedule(drvdata);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -1631,7 +1673,9 @@ static ssize_t speed_store(struct device *dev, struct device_attribute *attr,
 	scoped_guard(spinlock_irqsave, &drvdata->profile_lock)
 		drvdata->rgb_speed = speed;
 
-	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
+	ret = claw_rgb_schedule(drvdata);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -1673,7 +1717,7 @@ static void claw_led_brightness_set(struct led_classdev *led_cdev,
 			return;
 	}
 
-	mod_delayed_work(system_wq, &drvdata->rgb_queue, msecs_to_jiffies(50));
+	claw_rgb_schedule(drvdata);
 }
 
 static struct attribute *claw_rgb_attrs[] = {
@@ -1790,6 +1834,18 @@ static void cfg_resume_fn(struct work_struct *work)
 {
 	struct delayed_work *dwork = container_of(work, struct delayed_work, work);
 	struct claw_drvdata *drvdata = container_of(dwork, struct claw_drvdata, cfg_resume);
+
+	/* MCU has had time to become ready; re-open the command path and
+	 * requeue any RGB state deferred while suspended.
+	 */
+	scoped_guard(mutex, &drvdata->rom_mutex)
+		scoped_guard(mutex, &drvdata->cfg_mutex) {
+			drvdata->suspended = false;
+
+			if (drvdata->rgb_dirty)
+				mod_delayed_work(system_wq, &drvdata->rgb_queue,
+						 msecs_to_jiffies(50));
+		}
 
 	guard(spinlock_irqsave)(&drvdata->registration_lock);
 	    /* Pairs with smp_store_release from cfg_setup_fn in system_wq context */
@@ -1989,7 +2045,9 @@ static int claw_resume(struct hid_device *hdev)
 	if (!drvdata)
 		return -ENODEV;
 
-	/* MCU can take up to 500ms to be ready after resume */
+	/* MCU can take up to 500ms to be ready after resume. cfg_resume_fn()
+	 * clears the suspended gate once the device is ready.
+	 */
 	schedule_delayed_work(&drvdata->cfg_resume, msecs_to_jiffies(500));
 	return 0;
 }
@@ -2014,6 +2072,7 @@ static int msi_resume(struct hid_device *hdev)
 static int claw_suspend(struct hid_device *hdev)
 {
 	struct claw_drvdata *drvdata = hid_get_drvdata(hdev);
+	bool orphaned;
 
 	if (!drvdata)
 		return -ENODEV;
@@ -2021,6 +2080,25 @@ static int claw_suspend(struct hid_device *hdev)
 	cancel_delayed_work_sync(&drvdata->cfg_resume);
 	cancel_delayed_work_sync(&drvdata->cfg_setup);
 	cancel_delayed_work_sync(&drvdata->rgb_queue);
+
+	guard(mutex)(&drvdata->rom_mutex);
+	guard(mutex)(&drvdata->cfg_mutex);
+	drvdata->suspended = true;
+
+	/* Drain a pending orphan ACK so the port does not enter U3 with a flash
+	 * commit outstanding.
+	 */
+	scoped_guard(spinlock_irqsave, &drvdata->cmd_lock)
+		orphaned = drvdata->orphan_ack_pending;
+
+	if (orphaned) {
+		if (!wait_for_completion_timeout(&drvdata->orphan_ack_complete,
+						 msecs_to_jiffies(25)))
+			dev_dbg(&hdev->dev, "Timed out waiting for orphan ACK\n");
+
+		scoped_guard(spinlock_irqsave, &drvdata->cmd_lock)
+			drvdata->orphan_ack_pending = false;
+	}
 
 	return 0;
 }
