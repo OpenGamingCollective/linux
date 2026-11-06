@@ -806,6 +806,12 @@ struct amdgpu_hdmi_vsdb_info {
 	bool replay_mode;
 };
 
+enum amdgpu_dm_vrr_override {
+	AMDGPU_DM_VRR_OVERRIDE_AUTO,
+	AMDGPU_DM_VRR_OVERRIDE_FORCE_HDMI_VRR,
+	AMDGPU_DM_VRR_OVERRIDE_DISABLE_VRR,
+};
+
 struct amdgpu_dm_connector {
 
 	struct drm_connector base;
@@ -892,6 +898,7 @@ struct amdgpu_dm_connector {
 	/* Adaptive Sync */
 	bool pack_sdp_v1_3;
 	enum adaptive_sync_type as_type;
+	enum amdgpu_dm_vrr_override vrr_override;
 	struct amdgpu_hdmi_vsdb_info vsdb_info;
 
 	/* HDMI HPD debounce support */
@@ -1043,6 +1050,7 @@ struct dm_crtc_state {
 	bool vrr_supported;
 	struct mod_freesync_config freesync_config;
 	struct dc_info_packet vrr_infopacket;
+	struct dc_info_packet vtem_infopacket;
 
 	int abm_level;
 
@@ -1168,6 +1176,9 @@ struct __drm_planes_state *amdgpu_dm_get_next_zpos(struct drm_atomic_commit *sta
 			     (new_plane_state) = __i->new_state, 1))
 
 #if IS_ENABLED(CONFIG_DRM_AMD_DC_KUNIT_TEST)
+void dm_plane_inherit_flip_time(struct dc_plane_state *dc_plane_state,
+				struct drm_plane_state *old_plane_state,
+				struct drm_plane_state *new_plane_state);
 struct amdgpu_ip_block;
 bool dm_is_idle(struct amdgpu_ip_block *ip_block);
 int dm_wait_for_idle(struct amdgpu_ip_block *ip_block);

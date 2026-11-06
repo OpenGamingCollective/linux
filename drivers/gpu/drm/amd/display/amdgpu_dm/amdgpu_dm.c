@@ -3795,6 +3795,26 @@ static void dm_arm_vblank_event_pre_programming(struct amdgpu_crtc *acrtc,
 		drm_crtc_vblank_get(&acrtc->base);
 }
 
+/*
+ * FreeSync times each frame from the plane's previous flip, and a plane
+ * reset gives the new DC plane zeroed flip timing, so copy it over. Do
+ * this at commit time, not in atomic check: by then the previous commit
+ * has finished writing it.
+ */
+STATIC_IFN_KUNIT void
+dm_plane_inherit_flip_time(struct dc_plane_state *dc_plane_state,
+			   struct drm_plane_state *old_plane_state,
+			   struct drm_plane_state *new_plane_state)
+{
+	struct dc_plane_state *old_dc_plane_state =
+		to_dm_plane_state(old_plane_state)->dc_state;
+
+	if (old_dc_plane_state && old_dc_plane_state != dc_plane_state &&
+	    old_plane_state->crtc == new_plane_state->crtc)
+		dc_plane_state->time = old_dc_plane_state->time;
+}
+EXPORT_IF_KUNIT(dm_plane_inherit_flip_time);
+
 static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 				    struct drm_device *dev,
 				    struct amdgpu_display_manager *dm,
@@ -3900,6 +3920,9 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		dc_plane = dm_new_plane_state->dc_state;
 		if (!dc_plane)
 			continue;
+
+		dm_plane_inherit_flip_time(dc_plane, old_plane_state,
+					   new_plane_state);
 
 		bundle->surface_updates[planes_count].surface = dc_plane;
 		if (new_pcrtc_state->color_mgmt_changed || new_plane_state->color_mgmt_changed) {
@@ -4058,9 +4081,14 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		}
 
 		if (acrtc_state->stream) {
-			if (acrtc_state->freesync_vrr_info_changed)
+			if (acrtc_state->freesync_vrr_info_changed) {
 				bundle->stream_update.vrr_infopacket =
 					&acrtc_state->stream->vrr_infopacket;
+				bundle->stream_update.vtem_infopacket =
+					&acrtc_state->stream->vtem_infopacket;
+				bundle->stream_update.vsp_infopacket =
+					&acrtc_state->stream->vsp_infopacket;
+			}
 		}
 	}
 
@@ -5095,9 +5123,11 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
 		scaling_changed = is_scaling_state_different(dm_new_con_state,
 							     dm_old_con_state);
 
-		if ((new_con_state->hdmi.broadcast_rgb != old_con_state->hdmi.broadcast_rgb) &&
-			(dm_old_crtc_state->stream->output_color_space !=
-				amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state)))
+		if (new_con_state->hdmi.broadcast_rgb != old_con_state->hdmi.broadcast_rgb &&
+		    dm_old_crtc_state->stream->output_color_space !=
+		    amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing,
+						     new_con_state,
+						     dm_new_crtc_state->stream->signal))
 			output_color_space_changed = true;
 
 		abm_changed = dm_new_crtc_state->abm_level !=
@@ -5119,8 +5149,10 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
 		}
 
 		if (output_color_space_changed) {
-			dm_new_crtc_state->stream->output_color_space
-				= amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state);
+			dm_new_crtc_state->stream->output_color_space =
+				amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing,
+								 new_con_state,
+								 dm_new_crtc_state->stream->signal);
 
 			stream_update.output_color_space = &dm_new_crtc_state->stream->output_color_space;
 		}
