@@ -20,6 +20,7 @@
 #include "amdgpu_dm_crtc.h"
 #include "amdgpu_dm_kunit_test_helpers.h"
 #include "amdgpu_dm_irq_params.h"
+#include "modules/power/power_helpers.h"
 
 /* Tests for amdgpu_dm_crtc_modeset_required() */
 
@@ -822,6 +823,46 @@ static void dm_test_crtc_set_static_screen_optimze_psr_su_skips(struct kunit *te
 	link->psr_settings.psr_version = DC_PSR_VERSION_SU_1;
 
 	amdgpu_dm_crtc_set_static_screen_optimze(dm, stream, true, true);
+}
+
+static void dm_test_crtc_static_screen_replay_reenable_delay(struct kunit *test)
+{
+	struct amdgpu_display_manager *dm;
+	struct core_power *core_power;
+	struct power_entity *map;
+	struct dc_link *link;
+	struct dc_stream_state *stream;
+	unsigned int events = replay_event_vsync | replay_event_os_override_hold;
+
+	dm = kunit_kzalloc(test, sizeof(*dm), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, dm);
+	core_power = kunit_kzalloc(test, sizeof(*core_power), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, core_power);
+	map = kunit_kzalloc(test, sizeof(*map), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, map);
+	link = dm_kunit_alloc_link(test);
+	stream = dm_kunit_alloc_stream(test, link);
+
+	/* The override prevents hardware access while retaining event updates. */
+	map->stream = stream;
+	map->replay_events = events;
+	core_power->map = map;
+	core_power->num_entities = 1;
+	dm->power_module = &core_power->mod_public;
+	link->replay_settings.replay_feature_enabled = true;
+	link->replay_settings.replay_disabled_timestamp_ns = ktime_get_ns();
+
+	amdgpu_dm_crtc_set_static_screen_optimze(dm, stream, true, true);
+	KUNIT_EXPECT_EQ(test, map->replay_events, events);
+
+	link->replay_settings.replay_disabled_timestamp_ns = ktime_get_ns() - 500000001;
+	amdgpu_dm_crtc_set_static_screen_optimze(dm, stream, true, true);
+	KUNIT_EXPECT_EQ(test, map->replay_events,
+			(unsigned int)replay_event_os_override_hold);
+
+	link->replay_settings.replay_disabled_timestamp_ns = ktime_get_ns();
+	amdgpu_dm_crtc_set_static_screen_optimze(dm, stream, false, false);
+	KUNIT_EXPECT_EQ(test, map->replay_events, events);
 }
 
 /* Tests for amdgpu_dm_crtc_enable_vblank() */
@@ -1895,6 +1936,7 @@ static struct kunit_case amdgpu_dm_crtc_tests[] = {
 	KUNIT_CASE(dm_test_crtc_set_static_screen_optimze_no_sr_entry),
 	KUNIT_CASE(dm_test_crtc_set_static_screen_optimze_sr_entry_psr),
 	KUNIT_CASE(dm_test_crtc_set_static_screen_optimze_psr_su_skips),
+	KUNIT_CASE(dm_test_crtc_static_screen_replay_reenable_delay),
 	/* amdgpu_dm_crtc_enable_vblank */
 	KUNIT_CASE(dm_test_crtc_enable_vblank_rejects_unconfigured),
 	KUNIT_CASE(dm_test_crtc_enable_vblank_full_path),
