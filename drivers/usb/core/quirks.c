@@ -456,6 +456,10 @@ static const struct usb_device_id usb_quirk_list[] = {
 	/* ASUS TUF 4K PRO - BOS descriptor fetch hangs at SuperSpeed Plus */
 	{ USB_DEVICE(0x0b05, 0x1ab9), .driver_info = USB_QUIRK_NO_BOS },
 
+	/* ASUS ROG Xbox Ally X N-KEY gamepad MCU */
+	{ USB_DEVICE(0x0b05, 0x1b4c), .driver_info =
+			USB_QUIRK_IGNORE_REMOTE_WAKEUP },
+
 	/* Realtek Semiconductor Corp. Mass Storage Device (Multicard Reader)*/
 	{ USB_DEVICE(0x0bda, 0x0151), .driver_info = USB_QUIRK_CONFIG_INTF_STRINGS },
 
