@@ -3185,6 +3185,16 @@ static void fill_dc_dirty_rects(struct drm_plane *plane,
 	if (new_plane_state->rotation != DRM_MODE_ROTATE_0)
 		goto ffu;
 
+	/*
+	 * Force full-frame updates for Replay on DCN 3.14 (Phoenix/Hawk Point).
+	 * The DMCUB firmware on this generation produces visual artifacts when
+	 * processing selective updates within Panel Replay. Sending a single
+	 * full-screen dirty rect avoids the buggy SU code path in firmware.
+	 */
+	if (dm_crtc_state->stream->link->replay_settings.replay_feature_enabled &&
+	    dm_crtc_state->stream->ctx->dce_version == DCN_VERSION_3_14)
+		goto ffu;
+
 	if (!new_plane_state->ignore_damage_clips) {
 		num_clips = drm_plane_get_damage_clips_count(new_plane_state);
 		clips = drm_plane_get_damage_clips(new_plane_state);
@@ -3702,6 +3712,15 @@ static void amdgpu_dm_enable_self_refresh(struct amdgpu_display_manager *dm,
 	struct amdgpu_dm_connector *aconn =
 		(struct amdgpu_dm_connector *)acrtc_state->stream->dm_stream_context;
 
+	if (acrtc_state->update_type > UPDATE_TYPE_FAST) {
+		/*
+		 * Reset skip count after non-fast updates to prevent
+		 * self-refresh from being re-enabled too soon during
+		 * ongoing animations (e.g., workspace switch).
+		 */
+		aconn->sr_skip_count = AMDGPU_DM_PSR_ENTRY_DELAY;
+	}
+
 	if (!acrtc_state->base.async_flip) {
 		amdgpu_dm_psr_set_event(dm, acrtc_state->stream, false,
 			psr_event_immediate_flip, false);
@@ -3731,8 +3750,9 @@ static void amdgpu_dm_enable_self_refresh(struct amdgpu_display_manager *dm,
 			amdgpu_dm_psr_set_event(dm, acrtc_state->stream, false,
 				psr_event_hw_programming, false);
 
-			amdgpu_dm_replay_set_event(dm, acrtc_state->stream, false,
-				replay_event_hw_programming, false);
+			if ((current_ts - pr->replay_disabled_timestamp_ns) > 500000000)
+				amdgpu_dm_replay_set_event(dm, acrtc_state->stream, false,
+					replay_event_hw_programming, false);
 		}
 	} else {
 		acrtc_attach->dm_irq_params.allow_sr_entry = false;
@@ -3790,6 +3810,26 @@ static void dm_arm_vblank_event_pre_programming(struct amdgpu_crtc *acrtc,
 	if (pflip_update || cursor_update)
 		drm_crtc_vblank_get(&acrtc->base);
 }
+
+/*
+ * FreeSync times each frame from the plane's previous flip, and a plane
+ * reset gives the new DC plane zeroed flip timing, so copy it over. Do
+ * this at commit time, not in atomic check: by then the previous commit
+ * has finished writing it.
+ */
+STATIC_IFN_KUNIT void
+dm_plane_inherit_flip_time(struct dc_plane_state *dc_plane_state,
+			   struct drm_plane_state *old_plane_state,
+			   struct drm_plane_state *new_plane_state)
+{
+	struct dc_plane_state *old_dc_plane_state =
+		to_dm_plane_state(old_plane_state)->dc_state;
+
+	if (old_dc_plane_state && old_dc_plane_state != dc_plane_state &&
+	    old_plane_state->crtc == new_plane_state->crtc)
+		dc_plane_state->time = old_dc_plane_state->time;
+}
+EXPORT_IF_KUNIT(dm_plane_inherit_flip_time);
 
 static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 				    struct drm_device *dev,
@@ -3896,6 +3936,9 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		dc_plane = dm_new_plane_state->dc_state;
 		if (!dc_plane)
 			continue;
+
+		dm_plane_inherit_flip_time(dc_plane, old_plane_state,
+					   new_plane_state);
 
 		bundle->surface_updates[planes_count].surface = dc_plane;
 		if (new_pcrtc_state->color_mgmt_changed || new_plane_state->color_mgmt_changed) {
@@ -4054,9 +4097,14 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 		}
 
 		if (acrtc_state->stream) {
-			if (acrtc_state->freesync_vrr_info_changed)
+			if (acrtc_state->freesync_vrr_info_changed) {
 				bundle->stream_update.vrr_infopacket =
 					&acrtc_state->stream->vrr_infopacket;
+				bundle->stream_update.vtem_infopacket =
+					&acrtc_state->stream->vtem_infopacket;
+				bundle->stream_update.vsp_infopacket =
+					&acrtc_state->stream->vsp_infopacket;
+			}
 		}
 	}
 
@@ -4126,6 +4174,18 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 			spin_unlock_irqrestore(&pcrtc->dev->event_lock, flags);
 		}
 		mutex_lock(&dm->dc_lock);
+		if (((acrtc_state->update_type > UPDATE_TYPE_FAST) || vrr_active) &&
+		    acrtc_state->stream->link->replay_settings.replay_allow_active) {
+			amdgpu_dm_replay_set_event(dm, acrtc_state->stream, true,
+				replay_event_hw_programming, true);
+			/*
+			 * Record when replay was disabled so the 500ms
+			 * re-enable guard in amdgpu_dm_enable_self_refresh()
+			 * and vblank_control_worker works correctly.
+			 */
+			acrtc_state->stream->link->replay_settings.replay_disabled_timestamp_ns =
+				ktime_get_ns();
+		}
 		/*
 		 * Tearing (immediate) flips cannot work with panel self-refresh
 		 * features. The event is cleared by
@@ -4163,7 +4223,7 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
 			dm_update_pflip_irq_state(drm_to_adev(dev),
 						  acrtc_attach);
 		amdgpu_dm_enable_self_refresh(dm, acrtc_attach, acrtc_state,
-					      timestamp_ns);
+					      ktime_get_ns());
 		mutex_unlock(&dm->dc_lock);
 	}
 
@@ -5089,9 +5149,11 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
 		scaling_changed = is_scaling_state_different(dm_new_con_state,
 							     dm_old_con_state);
 
-		if ((new_con_state->hdmi.broadcast_rgb != old_con_state->hdmi.broadcast_rgb) &&
-			(dm_old_crtc_state->stream->output_color_space !=
-				amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state)))
+		if (new_con_state->hdmi.broadcast_rgb != old_con_state->hdmi.broadcast_rgb &&
+		    dm_old_crtc_state->stream->output_color_space !=
+		    amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing,
+						     new_con_state,
+						     dm_new_crtc_state->stream->signal))
 			output_color_space_changed = true;
 
 		abm_changed = dm_new_crtc_state->abm_level !=
@@ -5113,8 +5175,10 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
 		}
 
 		if (output_color_space_changed) {
-			dm_new_crtc_state->stream->output_color_space
-				= amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing, new_con_state);
+			dm_new_crtc_state->stream->output_color_space =
+				amdgpu_dm_get_output_color_space(&dm_new_crtc_state->stream->timing,
+								 new_con_state,
+								 dm_new_crtc_state->stream->signal);
 
 			stream_update.output_color_space = &dm_new_crtc_state->stream->output_color_space;
 		}

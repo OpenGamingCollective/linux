@@ -187,6 +187,22 @@ static void dm_test_apply_edid_quirks_skip_phy_ssc(struct kunit *test)
 }
 
 /**
+ * dm_test_apply_edid_quirks_force_freesync_min - Test ACR 0x08AF FreeSync min quirk
+ * @test: The KUnit test context
+ */
+static void dm_test_apply_edid_quirks_force_freesync_min(struct kunit *test)
+{
+	struct dc_edid_caps edid_caps = {0};
+	struct dc_link *link = dm_test_quirk_link(test);
+	struct edid *edid = dm_test_edid_with_panel_id(test,
+			drm_edid_encode_panel_id('A', 'C', 'R', 0x08AF));
+
+	apply_edid_quirks(link, edid, &edid_caps);
+
+	KUNIT_EXPECT_EQ(test, edid_caps.panel_patch.force_freesync_min_hz, 55U);
+}
+
+/**
  * dm_test_apply_edid_quirks_unknown_noop - Test unknown panel id is a no-op
  * @test: The KUnit test context
  */
@@ -1130,6 +1146,33 @@ static void dm_test_get_max_frl_rate_4lanes_10gbps(struct kunit *test)
 static void dm_test_get_max_frl_rate_4lanes_12gbps(struct kunit *test)
 {
 	KUNIT_EXPECT_EQ(test, get_max_frl_rate(4, 12), 6);
+}
+
+/**
+ * dm_test_get_max_frl_rate_4lanes_16gbps - Test Get max frl rate 4lanes 16gbps
+ * @test: The KUnit test context
+ */
+static void dm_test_get_max_frl_rate_4lanes_16gbps(struct kunit *test)
+{
+	KUNIT_EXPECT_EQ(test, get_max_frl_rate(4, 16), 7);
+}
+
+/**
+ * dm_test_get_max_frl_rate_4lanes_20gbps - Test Get max frl rate 4lanes 20gbps
+ * @test: The KUnit test context
+ */
+static void dm_test_get_max_frl_rate_4lanes_20gbps(struct kunit *test)
+{
+	KUNIT_EXPECT_EQ(test, get_max_frl_rate(4, 20), 8);
+}
+
+/**
+ * dm_test_get_max_frl_rate_4lanes_24gbps - Test Get max frl rate 4lanes 24gbps
+ * @test: The KUnit test context
+ */
+static void dm_test_get_max_frl_rate_4lanes_24gbps(struct kunit *test)
+{
+	KUNIT_EXPECT_EQ(test, get_max_frl_rate(4, 24), 9);
 }
 
 /**
@@ -3730,6 +3773,7 @@ static struct kunit_case amdgpu_dm_helpers_test_cases[] = {
 	KUNIT_CASE(dm_test_apply_edid_quirks_remove_sink_ext_caps),
 	KUNIT_CASE(dm_test_apply_edid_quirks_disable_colorimetry),
 	KUNIT_CASE(dm_test_apply_edid_quirks_skip_phy_ssc),
+	KUNIT_CASE(dm_test_apply_edid_quirks_force_freesync_min),
 	KUNIT_CASE(dm_test_apply_edid_quirks_unknown_noop),
 	/* dm_helpers_parse_edid_caps */
 	KUNIT_CASE(dm_test_parse_edid_caps_null_edid),
@@ -3777,6 +3821,9 @@ static struct kunit_case amdgpu_dm_helpers_test_cases[] = {
 	KUNIT_CASE(dm_test_get_max_frl_rate_4lanes_8gbps),
 	KUNIT_CASE(dm_test_get_max_frl_rate_4lanes_10gbps),
 	KUNIT_CASE(dm_test_get_max_frl_rate_4lanes_12gbps),
+	KUNIT_CASE(dm_test_get_max_frl_rate_4lanes_16gbps),
+	KUNIT_CASE(dm_test_get_max_frl_rate_4lanes_20gbps),
+	KUNIT_CASE(dm_test_get_max_frl_rate_4lanes_24gbps),
 	KUNIT_CASE(dm_test_get_max_frl_rate_unknown),
 	/* dm_dtn_log_begin / dm_dtn_log_append_v / dm_dtn_log_end */
 	KUNIT_CASE(dm_test_dtn_log_buffer_accumulates),
