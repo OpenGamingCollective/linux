@@ -505,8 +505,7 @@ bool dcn32_set_mcm_luts(
 	if (plane_state->cm.shaper_func.type == TF_TYPE_HWPWL)
 		lut_params = &plane_state->cm.shaper_func.pwl;
 	else if (plane_state->cm.shaper_func.type == TF_TYPE_DISTRIBUTED_POINTS) {
-		// TODO: dpp_base replace
-		rval = cm3_helper_translate_curve_to_hw_format(plane_state->ctx,
+		rval = cm_helper_translate_curve_to_hw_format(plane_state->ctx,
 			&plane_state->cm.shaper_func,
 			&dpp_base->shaper_params,
 			true);
