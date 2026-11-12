@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# AMD WMI drivers
+#
+
+config AMD_WMI_AOD
+	tristate "AMD Overclocking (AOD) WMI driver"
+	depends on ACPI_WMI
+	help
+	  This driver adds support for the AMD Overclocking (AOD) WMI
+	  interface found on AMD Ryzen platforms. It allows to change the
+	  PPT, TDC and EDC limits and the SMT setting of the firmware, and
+	  to read the current memory clock through sysfs.
+
+	  Changing these settings can make the system unstable or damage
+	  the hardware. If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called amd-wmi-aod.
