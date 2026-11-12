@@ -2221,6 +2221,7 @@ static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_
 		// Not required since we send this inputs ep through the gamepad input dev
 		if (drvdata.gamepad_cfg && drvdata.gamepad_cfg->input) {
 			input_unregister_device(drvdata.gamepad_cfg->input);
+			drvdata.gamepad_cfg->input = NULL;
 			hid_info(hdev, "Ally X removed unrequired input dev.\n");
 		}
 	}
