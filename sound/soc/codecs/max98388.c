@@ -297,6 +297,56 @@ static SOC_ENUM_SINGLE_DECL(max98388_ssm_mod_enum,
 			    MAX98388_SPK_AMP_SSM_MOD_SHIFT,
 			    max98388_ssm_mod_text);
 
+
+#define MAX98388_VOL_MUTE 0x7f
+
+static int max98388_resume_mute_switch_put(struct snd_kcontrol *kcontrol,
+					   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct max98388_priv *max98388 = snd_soc_component_get_drvdata(component);
+	int mute = ucontrol->value.integer.value[0];
+	unsigned int vol, val;
+	int ret;
+
+	ret = regmap_read(max98388->regmap, MAX98388_R2090_SPK_CH_VOL_CTRL, &vol);
+	if (ret)
+		return ret;
+
+	if (vol == MAX98388_VOL_MUTE && mute)
+		return 0;
+	if (vol != MAX98388_VOL_MUTE && !mute)
+		return 0;
+
+	if (mute) {
+		max98388->saved_vol = vol;
+		val = MAX98388_VOL_MUTE;
+	} else {
+		val = max98388->saved_vol;
+	}
+
+	ret = regmap_write(max98388->regmap, MAX98388_R2090_SPK_CH_VOL_CTRL, val);
+
+	return ret;
+}
+
+static int max98388_resume_mute_switch_get(struct snd_kcontrol *kcontrol,
+					   struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct max98388_priv *max98388 = snd_soc_component_get_drvdata(component);
+	unsigned int vol;
+	int ret;
+
+	ret = regmap_read(max98388->regmap, MAX98388_R2090_SPK_CH_VOL_CTRL, &vol);
+	if (ret)
+		return ret;
+
+	ucontrol->value.integer.value[0] = (vol == MAX98388_VOL_MUTE) ? 1 : 0;
+
+	return 0;
+}
+
 static const struct snd_kcontrol_new max98388_snd_controls[] = {
 	SOC_SINGLE("Ramp Up Switch", MAX98388_R2091_SPK_CH_CFG,
 		   MAX98388_SPK_CFG_VOL_RMPUP_SHIFT, 1, 0),
@@ -337,6 +387,8 @@ static const struct snd_kcontrol_new max98388_snd_controls[] = {
 	/* Digital Volume */
 	SOC_SINGLE_TLV("Digital Volume", MAX98388_R2090_SPK_CH_VOL_CTRL,
 		       0, 0x7F, 1, max98388_digital_tlv),
+	SOC_SINGLE_EXT("Resume Mute Switch", 0, 0, 1, 0,
+		       max98388_resume_mute_switch_get, max98388_resume_mute_switch_put),
 	/* Speaker Volume */
 	SOC_SINGLE_TLV("Speaker Volume", MAX98388_R2092_SPK_AMP_OUT_CFG,
 		       0, 5, 0, max98388_amp_gain_tlv),
@@ -389,27 +441,43 @@ static void max98388_reset(struct max98388_priv *max98388, struct device *dev)
 {
 	int ret, reg, count;
 
+
 	/* Software Reset */
 	ret = regmap_update_bits(max98388->regmap,
 				 MAX98388_R2000_SW_RESET,
 				 MAX98388_SOFT_RESET,
 				 MAX98388_SOFT_RESET);
-	if (ret)
+
+	if (ret) {
 		dev_err(dev, "Reset command failed. (ret:%d)\n", ret);
+		goto exit;
+	}
+
 
 	count = 0;
 	while (count < 3) {
 		usleep_range(10000, 11000);
+
 		/* Software Reset Verification */
 		ret = regmap_read(max98388->regmap,
 				  MAX98388_R22FF_REV_ID, &reg);
+
 		if (!ret) {
 			dev_info(dev, "Reset completed (retry:%d)\n", count);
-			return;
+			goto exit;
 		}
 		count++;
 	}
+
 	dev_err(dev, "Reset failed. (ret:%d)\n", ret);
+
+
+exit:
+	regcache_cache_only(max98388->regmap, true);
+	ret = regmap_update_bits(max98388->regmap,
+				 MAX98388_R2000_SW_RESET,
+				 MAX98388_SOFT_RESET, 0);
+	regcache_cache_only(max98388->regmap, false);
 }
 
 static int max98388_probe(struct snd_soc_component *component)
@@ -418,6 +486,7 @@ static int max98388_probe(struct snd_soc_component *component)
 
 	/* Software Reset */
 	max98388_reset(max98388, component->dev);
+	usleep_range(400, 1000);
 
 	/* General channel source configuration */
 	regmap_write(max98388->regmap,
@@ -811,6 +880,7 @@ static bool max98388_readable_register(struct device *dev,
 	case MAX98388_R210E_AUTO_RESTART:
 	case MAX98388_R210F_GLOBAL_EN:
 	case MAX98388_R22FF_REV_ID:
+	case MAX98388_R2000_SW_RESET:
 		return true;
 	default:
 		return false;
@@ -823,6 +893,7 @@ static bool max98388_volatile_reg(struct device *dev, unsigned int reg)
 	case MAX98388_R2001_INT_RAW1 ... MAX98388_R2005_INT_STATE2:
 	case MAX98388_R210F_GLOBAL_EN:
 	case MAX98388_R22FF_REV_ID:
+	case MAX98388_R2000_SW_RESET:
 		return true;
 	default:
 		return false;
@@ -867,6 +938,7 @@ static int max98388_resume(struct device *dev)
 
 	regcache_cache_only(max98388->regmap, false);
 	max98388_reset(max98388, dev);
+	usleep_range(400, 1000);
 	ret = regcache_sync(max98388->regmap);
 	if (ret) {
 		regcache_cache_only(max98388->regmap, true);
