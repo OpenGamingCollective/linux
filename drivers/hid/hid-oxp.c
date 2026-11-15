@@ -1386,7 +1386,7 @@ static struct mc_subled oxp_rgb_subled_info[] = {
 
 static struct led_classdev_mc oxp_cdev_rgb = {
 	.led_cdev = {
-		.name = "oxp:rgb:joystick_rings",
+		.name = "go:rgb:joystick_rings",
 		.color = LED_COLOR_ID_RGB,
 		.brightness = 0x64,
 		.max_brightness = 0x64,
