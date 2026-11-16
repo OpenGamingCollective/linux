@@ -110,6 +110,7 @@ struct acpi_battery {
 
 	struct mutex property_lock; /* Protects properties below. */
 	unsigned long update_time;
+	unsigned long long charge_time;
 	int revision;
 	int rate_now;
 	int capacity_now;
@@ -226,6 +227,17 @@ static int acpi_battery_get_property(struct power_supply *psy,
 				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 			} else if (battery_ac_is_broken) {
 				val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+			} else if (battery->charge_time == ACPI_BATTERY_VALUE_UNKNOWN) {
+				/*
+				 * On steamdeck OLED, lower power PSU can still report
+				 * "Charging" status however, we check here if battery
+				 * charge time is reported as well or not. If not,
+				 * probably we can confirm a lower power PSU which is
+				 * actually discharing the deck.
+				 *
+				 * Hence report status as discharging.
+				 * */
+				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 			} else {
 				mutex_unlock(&battery->property_lock);
 
@@ -613,6 +625,10 @@ static int acpi_battery_get_state(struct acpi_battery *battery)
 	int result = 0;
 	acpi_status status = 0;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object arg0 = { ACPI_TYPE_INTEGER };
+	struct acpi_object_list args = { 1, &arg0 };
+
+	arg0.integer.value = 100;
 
 	lockdep_assert_held(&battery->property_lock);
 
@@ -638,6 +654,18 @@ static int acpi_battery_get_state(struct acpi_battery *battery)
 	battery->update_time = jiffies;
 	kfree(buffer.pointer);
 
+	/*
+	 * Read _BCT (Battery charge time) to determine if we are really
+	 * charging.
+	 */
+	status = acpi_evaluate_integer(battery->device->handle, "_BCT",
+				      &args, &battery->charge_time);
+
+	if (ACPI_FAILURE(status)) {
+		acpi_handle_info(battery->device->handle,
+				 "_BCT evaluation failed: %s",
+				 acpi_format_exception(status));
+	}
 	/* For buggy DSDTs that report negative 16-bit values for either
 	 * charging or discharging current and/or report 0 as 65536
 	 * due to bad math.
