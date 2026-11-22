@@ -1984,6 +1984,14 @@ static int ally_rgb_register(struct hid_device *hdev, struct ally_rgb_dev *led_r
 	mc_led_info[2].color_index = LED_COLOR_ID_RGB;
 	mc_led_info[3].color_index = LED_COLOR_ID_RGB;
 
+	/*
+	 * Each zone's intensity is a packed 0xRRGGBB value. Without max_intensity,
+	 * the multicolor class falls back to max_brightness (255) and clamps the
+	 * written intensity to it, leaving only the blue channel reachable.
+	 */
+	for (int i = 0; i < 4; i++)
+		mc_led_info[i].max_intensity = 0xFFFFFF;
+
 	led_rgb->led_rgb_dev.subled_info = mc_led_info;
 	led_rgb->led_rgb_dev.num_colors = 4;
 
@@ -2213,6 +2221,7 @@ static int ally_hid_probe(struct hid_device *hdev, const struct hid_device_id *_
 		// Not required since we send this inputs ep through the gamepad input dev
 		if (drvdata.gamepad_cfg && drvdata.gamepad_cfg->input) {
 			input_unregister_device(drvdata.gamepad_cfg->input);
+			drvdata.gamepad_cfg->input = NULL;
 			hid_info(hdev, "Ally X removed unrequired input dev.\n");
 		}
 	}
