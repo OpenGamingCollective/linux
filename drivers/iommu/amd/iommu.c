@@ -11,6 +11,7 @@
 #include <linux/ratelimit.h>
 #include <linux/pci.h>
 #include <linux/acpi.h>
+#include <linux/cleanup.h>
 #include <linux/pci-ats.h>
 #include <linux/bitmap.h>
 #include <linux/slab.h>
@@ -2396,6 +2397,9 @@ static int attach_device(struct device *dev,
 	if (ret)
 		goto out;
 
+	if (dev_data->perfopt && pdom_is_in_pt_mode(domain))
+		goto skip_caps;
+
 	/* Setup GCR3 table */
 	if (pdom_is_sva_capable(domain)) {
 		ret = init_gcr3_table(dev_data, domain);
@@ -2420,6 +2424,7 @@ static int attach_device(struct device *dev,
 		pdev_enable_cap_ats(pdev);
 	}
 
+skip_caps:
 	/* Update data structures */
 	dev_data->domain = domain;
 	spin_lock_irqsave(&domain->lock, flags);
@@ -2912,11 +2917,32 @@ void amd_iommu_domain_free(struct iommu_domain *dom)
 	kfree(domain);
 }
 
+/* Each IOMMU has at most one PerfOpt-eligible GPU. */
+static int set_device_perfopt(struct iommu_dev_data *dev_data, bool enable)
+{
+	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
+
+	if (!dev_data->perfopt)
+		return 0;
+
+	guard(raw_spinlock_irqsave)(&iommu->lock);
+	if (iommu->perfopt_enabled == enable)
+		return 0;
+
+	return amd_iommu_perfopt_set(iommu, enable);
+}
+
 static int blocked_domain_attach_device(struct iommu_domain *domain,
 					struct device *dev,
 					struct iommu_domain *old)
 {
 	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
+	int ret;
+
+	/* Clearing the DTE cannot block DMA while PerfOpt bypasses it. */
+	ret = set_device_perfopt(dev_data, false);
+	if (ret)
+		return ret;
 
 	if (dev_data->domain)
 		detach_device(dev);
@@ -2950,6 +2976,9 @@ static struct protection_domain identity_domain;
 static int amd_iommu_identity_attach(struct iommu_domain *dom, struct device *dev,
 				     struct iommu_domain *old)
 {
+	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
+	int ret;
+
 	/*
 	 * Don't allow attaching a device to the identity domain if SNP is
 	 * enabled and SNP Mode0 support is not present.
@@ -2957,7 +2986,13 @@ static int amd_iommu_identity_attach(struct iommu_domain *dom, struct device *de
 	if (amd_iommu_snp_en && !amd_iommu_snp_mode0_sup)
 		return -EINVAL;
 
-	return amd_iommu_attach_device(dom, dev, old);
+	ret = amd_iommu_attach_device(dom, dev, old);
+	if (ret)
+		return ret;
+
+	/* PerfOpt is optional; the identity attachment is already complete. */
+	set_device_perfopt(dev_data, true);
+	return 0;
 }
 
 static const struct iommu_domain_ops identity_domain_ops = {
@@ -3000,6 +3035,12 @@ static int amd_iommu_attach_device(struct iommu_domain *dom, struct device *dev,
 	 */
 	if (dom->dirty_ops && !amd_iommu_hd_support(iommu))
 		return -EINVAL;
+
+	if (!pdom_is_in_pt_mode(domain)) {
+		ret = set_device_perfopt(dev_data, false);
+		if (ret)
+			return ret;
+	}
 
 	if (dev_data->domain)
 		detach_device(dev);
@@ -3154,6 +3195,28 @@ static bool amd_iommu_is_attach_deferred(struct device *dev)
 	return dev_data->defer_attach;
 }
 
+static bool quirks_force_identity_mapping(struct pci_dev *pdev)
+{
+	struct pci_dev *bridge;
+	int class = pdev->class >> 8;
+
+	/* AMD GPU vendor ID */
+	if (pdev->vendor != PCI_VENDOR_ID_ATI)
+		return false;
+
+	/* GPU class */
+	if (class != PCI_CLASS_DISPLAY_VGA &&
+	    class != PCI_CLASS_DISPLAY_OTHER)
+		return false;
+
+	bridge = pci_upstream_bridge(pdev);
+	if (bridge && bridge->vendor == PCI_VENDOR_ID_ATI)
+		return false;
+
+	/* It is the GPU in an APU, force identity domain */
+	return true;
+}
+
 static int amd_iommu_def_domain_type(struct device *dev)
 {
 	struct iommu_dev_data *dev_data;
@@ -3162,20 +3225,26 @@ static int amd_iommu_def_domain_type(struct device *dev)
 	if (!dev_data)
 		return 0;
 
+	if (!dev_is_pci(dev))
+		return 0;
+
 	/* Always use DMA domain for untrusted device */
-	if (dev_is_pci(dev) && to_pci_dev(dev)->untrusted)
+	if (to_pci_dev(dev)->untrusted)
 		return IOMMU_DOMAIN_DMA;
 
-	/*
-	 * Do not identity map IOMMUv2 capable devices when:
-	 *  - memory encryption is active, because some of those devices
-	 *    (AMD GPUs) don't have the encryption bit in their DMA-mask
-	 *    and require remapping.
-	 *  - SNP is enabled, because it prohibits DTE[Mode]=0.
-	 */
-	if (pdev_pasid_supported(dev_data) &&
-	    !cc_platform_has(CC_ATTR_MEM_ENCRYPT) &&
-	    !amd_iommu_snp_en) {
+	/* Apply device specific quirks */
+	if (quirks_force_identity_mapping(to_pci_dev(dev))) {
+		/*
+		 * When memory encryption is active, some of these devices
+		 * don't have the encryption bit in their DMA-mask and
+		 * require remapping.
+		 */
+		if (cc_platform_has(CC_ATTR_MEM_ENCRYPT))
+			return 0;
+
+		dev_data->perfopt = get_amd_iommu_from_dev_data(dev_data)->features &
+				    FEATURE_PERF_OPT;
+
 		return IOMMU_DOMAIN_IDENTITY;
 	}
 
