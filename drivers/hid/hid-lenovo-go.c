@@ -21,6 +21,7 @@
 #include <linux/led-class-multicolor.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
+#include <linux/spinlock.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/unaligned.h>
@@ -31,13 +32,27 @@
 #include "hid-ids.h"
 
 #define GO_GP_INTF_IN		0x83
+#define GO_INPUT_REPORT_ID	0x04
 #define GO_OUTPUT_REPORT_ID	0x05
 #define GO_GP_RESET_SUCCESS	0x01
 #define GO_PACKET_SIZE		64
+#define GO_COMMAND_TIMEOUT_MS	50
+
+/* Lenovo replies identify a command and a sub-command, but have no sequence. */
+struct hid_go_cmd {
+	struct completion done;
+	spinlock_t lock; /* protects fields below */
+	bool pending;
+	u8 id;
+	u8 command;
+	u8 sub_command;
+	u8 device;
+	int result;
+};
 
 static struct hid_go_cfg {
 	struct delayed_work go_cfg_setup;
-	struct completion send_cmd_complete;
+	struct hid_go_cmd cmd;
 	struct led_classdev *led_cdev;
 	struct hid_device *hdev;
 	struct mutex cfg_mutex; /*ensure single synchronous output report*/
@@ -94,6 +109,11 @@ static struct hid_go_cfg {
 
 struct go_cfg_attr {
 	u8 index;
+};
+
+struct go_cal_cfg_attr {
+	u8 index;
+	u8 *status;
 };
 
 struct command_report {
@@ -330,6 +350,62 @@ static const char *const os_mode_text[] = {
 	[WINDOWS] = "windows",
 	[LINUX] = "linux",
 };
+
+static void hid_go_cmd_arm(u8 id, u8 command, u8 sub_command, u8 device)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	reinit_completion(&drvdata.cmd.done);
+	drvdata.cmd.pending = true;
+	drvdata.cmd.id = id;
+	drvdata.cmd.command = command;
+	drvdata.cmd.sub_command = sub_command;
+	drvdata.cmd.device = device;
+}
+
+static void hid_go_cmd_consume(const struct command_report *cmd_rep, int result)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	if (drvdata.cmd.pending && cmd_rep->id == drvdata.cmd.id &&
+	    cmd_rep->cmd == drvdata.cmd.command &&
+	    cmd_rep->sub_cmd == drvdata.cmd.sub_command &&
+	    cmd_rep->device_type == drvdata.cmd.device) {
+		drvdata.cmd.pending = false;
+		drvdata.cmd.result = result;
+		complete(&drvdata.cmd.done);
+	}
+}
+
+static int hid_go_cmd_finish(long wait_result)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	if (wait_result <= 0) {
+		drvdata.cmd.pending = false;
+		return wait_result < 0 ? wait_result : -ETIMEDOUT;
+	}
+
+	return drvdata.cmd.result;
+}
+
+static int hid_go_cmd_cancel(int result)
+{
+	guard(spinlock_irqsave)(&drvdata.cmd.lock);
+
+	drvdata.cmd.pending = false;
+	return result;
+}
+
+static int hid_go_send_output_report(struct hid_device *hdev, u8 *packet)
+{
+	int ret;
+
+	ret = hid_hw_output_report(hdev, packet, GO_PACKET_SIZE);
+	if (ret < 0)
+		return ret;
+	return ret == GO_PACKET_SIZE ? 0 : -EINVAL;
+}
 
 static int hid_go_version_event(struct command_report *cmd_rep)
 {
@@ -577,17 +653,22 @@ static int hid_go_light_event(struct command_report *cmd_rep)
 
 static int hid_go_device_status_event(struct command_report *cmd_rep)
 {
+	u8 status = cmd_rep->data[1];
+
+	if (status > CAL_STAT_FAILURE)
+		status = CAL_STAT_FAILURE;
+
 	switch (cmd_rep->device_type) {
 	case LEFT_CONTROLLER:
 		switch (cmd_rep->data[0]) {
 		case CALDEV_GYROSCOPE:
-			drvdata.gp_left_gyro_cal_status = cmd_rep->data[1];
+			drvdata.gp_left_gyro_cal_status = status;
 			return 0;
 		case CALDEV_JOYSTICK:
-			drvdata.gp_left_joy_cal_status = cmd_rep->data[1];
+			drvdata.gp_left_joy_cal_status = status;
 			return 0;
 		case CALDEV_TRIGGER:
-			drvdata.gp_left_trigg_cal_status = cmd_rep->data[1];
+			drvdata.gp_left_trigg_cal_status = status;
 			return 0;
 		default:
 			return -EINVAL;
@@ -596,13 +677,13 @@ static int hid_go_device_status_event(struct command_report *cmd_rep)
 	case RIGHT_CONTROLLER:
 		switch (cmd_rep->data[0]) {
 		case CALDEV_GYROSCOPE:
-			drvdata.gp_right_gyro_cal_status = cmd_rep->data[1];
+			drvdata.gp_right_gyro_cal_status = status;
 			return 0;
 		case CALDEV_JOYSTICK:
-			drvdata.gp_right_joy_cal_status = cmd_rep->data[1];
+			drvdata.gp_right_joy_cal_status = status;
 			return 0;
 		case CALDEV_TRIGGER:
-			drvdata.gp_right_trigg_cal_status = cmd_rep->data[1];
+			drvdata.gp_right_trigg_cal_status = status;
 			return 0;
 		default:
 			return -EINVAL;
@@ -654,7 +735,7 @@ static int hid_go_raw_event(struct hid_device *hdev, struct hid_report *report,
 	struct command_report *cmd_rep;
 	int ep, ret;
 
-	if (size != GO_PACKET_SIZE)
+	if (size != GO_PACKET_SIZE || data[0] != GO_INPUT_REPORT_ID)
 		goto passthrough;
 
 	ep = get_endpoint_address(hdev);
@@ -707,7 +788,7 @@ static int hid_go_raw_event(struct hid_device *hdev, struct hid_report *report,
 	dev_dbg(&hdev->dev, "Rx data as raw input report: [%*ph]\n",
 		GO_PACKET_SIZE, data);
 
-	complete(&drvdata.send_cmd_complete);
+	hid_go_cmd_consume(cmd_rep, ret);
 	return ret;
 
 passthrough:
@@ -722,7 +803,8 @@ static int mcu_property_out(struct hid_device *hdev, u8 id, u8 command,
 	unsigned char *dmabuf __free(kfree) = NULL;
 	u8 header[] = { GO_OUTPUT_REPORT_ID, id, command, index, device };
 	size_t header_size = ARRAY_SIZE(header);
-	int timeout = 50;
+	unsigned long timeout = msecs_to_jiffies(GO_COMMAND_TIMEOUT_MS);
+	long wait_result;
 	int ret;
 
 	if (header_size + len > GO_PACKET_SIZE)
@@ -740,22 +822,14 @@ static int mcu_property_out(struct hid_device *hdev, u8 id, u8 command,
 	dev_dbg(&hdev->dev, "Send data as raw output report: [%*ph]\n",
 		GO_PACKET_SIZE, dmabuf);
 
-	ret = hid_hw_output_report(hdev, dmabuf, GO_PACKET_SIZE);
-	if (ret < 0)
-		return ret;
-
-	ret = ret == GO_PACKET_SIZE ? 0 : -EINVAL;
+	hid_go_cmd_arm(id, command, index, device);
+	ret = hid_go_send_output_report(hdev, dmabuf);
 	if (ret)
-		return ret;
+		return hid_go_cmd_cancel(ret);
 
-	ret = wait_for_completion_interruptible_timeout(&drvdata.send_cmd_complete,
-							msecs_to_jiffies(timeout));
-
-	if (ret == 0) /* timeout occurred */
-		ret = -EBUSY;
-
-	reinit_completion(&drvdata.send_cmd_complete);
-	return 0;
+	wait_result = wait_for_completion_interruptible_timeout(&drvdata.cmd.done,
+								timeout);
+	return hid_go_cmd_finish(wait_result);
 }
 
 static ssize_t version_show(struct device *dev, struct device_attribute *attr,
@@ -1341,22 +1415,24 @@ static ssize_t device_status_show(struct device *dev,
 static ssize_t calibrate_config_store(struct device *dev,
 				      struct device_attribute *attr,
 				      const char *buf, u8 cmd, u8 sub_cmd,
-				      size_t count, enum dev_type device_type)
+				      size_t count, enum dev_type device_type,
+				      u8 *cal_status)
 {
-	size_t size = 1;
-	u8 val = 0;
+	u8 val;
 	int ret;
 
 	ret = sysfs_match_string(cal_enabled_text, buf);
 	if (ret < 0)
 		return ret;
+	if (ret == CAL_UNKNOWN)
+		return -EINVAL;
 
 	val = ret;
-	if (!val)
-		size = 0;
+	if (val == CAL_START)
+		*cal_status = CAL_STAT_UNKNOWN;
 
 	ret = mcu_property_out(drvdata.hdev, MCU_CONFIG_DATA, cmd, sub_cmd,
-			       device_type, &val, size);
+			       device_type, &val, sizeof(val));
 	if (ret < 0)
 		return ret;
 
@@ -1751,7 +1827,8 @@ static void hid_go_brightness_set(struct led_classdev *led_cdev,
 				     const char *buf, size_t count)           \
 	{                                                                     \
 		return calibrate_config_store(dev, attr, buf, _name.index,    \
-					      _scmd, count, _dtype);          \
+					      _scmd, count, _dtype,           \
+					      _name.status);                   \
 	}                                                                     \
 	static ssize_t _name##_##_rtype##_show(                               \
 		struct device *dev, struct device_attribute *attr, char *buf) \
@@ -1911,18 +1988,24 @@ LEGO_DEVICE_ATTR_RW(rumble_notification_left, "rumble_notification",
 static DEVICE_ATTR_RO_NAMED(rumble_notification_left_index,
 			    "rumble_notification_index");
 
-static struct go_cfg_attr cal_trigg_left = { TRIGGER_CALIBRATE };
-LEGO_CAL_DEVICE_ATTR(cal_trigg_left, "calibrate_trigger", SET_TRIGGER_CFG,
+static struct go_cal_cfg_attr cal_trigg_left = {
+	SET_TRIGGER_CFG, &drvdata.gp_left_trigg_cal_status
+};
+LEGO_CAL_DEVICE_ATTR(cal_trigg_left, "calibrate_trigger", TRIGGER_CALIBRATE,
 		     LEFT_CONTROLLER, index);
 static DEVICE_ATTR_RO_NAMED(cal_trigg_left_index, "calibrate_trigger_index");
 
-static struct go_cfg_attr cal_joy_left = { JOYSTICK_CALIBRATE };
-LEGO_CAL_DEVICE_ATTR(cal_joy_left, "calibrate_joystick", SET_JOYSTICK_CFG,
+static struct go_cal_cfg_attr cal_joy_left = {
+	SET_JOYSTICK_CFG, &drvdata.gp_left_joy_cal_status
+};
+LEGO_CAL_DEVICE_ATTR(cal_joy_left, "calibrate_joystick", JOYSTICK_CALIBRATE,
 		     LEFT_CONTROLLER, index);
 static DEVICE_ATTR_RO_NAMED(cal_joy_left_index, "calibrate_joystick_index");
 
-static struct go_cfg_attr cal_gyro_left = { GYRO_CALIBRATE };
-LEGO_CAL_DEVICE_ATTR(cal_gyro_left, "calibrate_gyro", SET_GYRO_CFG,
+static struct go_cal_cfg_attr cal_gyro_left = {
+	SET_GYRO_CFG, &drvdata.gp_left_gyro_cal_status
+};
+LEGO_CAL_DEVICE_ATTR(cal_gyro_left, "calibrate_gyro", GYRO_CALIBRATE,
 		     LEFT_CONTROLLER, index);
 static DEVICE_ATTR_RO_NAMED(cal_gyro_left_index, "calibrate_gyro_index");
 
@@ -1999,13 +2082,13 @@ LEGO_DEVICE_ATTR_RW(imu_bypass_right, "imu_bypass_enabled", RIGHT_CONTROLLER,
 		    index, feature_status);
 static DEVICE_ATTR_RO_NAMED(imu_bypass_right_index, "imu_bypass_enabled_index");
 
-static struct go_cfg_attr imu_enabled_right = { FEATURE_IMU_BYPASS };
+static struct go_cfg_attr imu_enabled_right = { FEATURE_IMU_ENABLE };
 LEGO_DEVICE_ATTR_RW(imu_enabled_right, "imu_enabled", RIGHT_CONTROLLER, index,
 		    feature_status);
 static DEVICE_ATTR_RO_NAMED(imu_enabled_right_index, "imu_enabled_index");
 
 static struct go_cfg_attr reset_right = { FEATURE_RESET_GAMEPAD };
-LEGO_DEVICE_ATTR_WO(reset_right, "reset", LEFT_CONTROLLER, feature_status);
+LEGO_DEVICE_ATTR_WO(reset_right, "reset", RIGHT_CONTROLLER, feature_status);
 
 static struct go_cfg_attr rumble_mode_right = { RUMBLE_MODE };
 LEGO_DEVICE_ATTR_RW(rumble_mode_right, "rumble_mode", RIGHT_CONTROLLER, index,
@@ -2018,18 +2101,24 @@ LEGO_DEVICE_ATTR_RW(rumble_notification_right, "rumble_notification",
 static DEVICE_ATTR_RO_NAMED(rumble_notification_right_index,
 			    "rumble_notification_index");
 
-static struct go_cfg_attr cal_trigg_right = { TRIGGER_CALIBRATE };
-LEGO_CAL_DEVICE_ATTR(cal_trigg_right, "calibrate_trigger", SET_TRIGGER_CFG,
+static struct go_cal_cfg_attr cal_trigg_right = {
+	SET_TRIGGER_CFG, &drvdata.gp_right_trigg_cal_status
+};
+LEGO_CAL_DEVICE_ATTR(cal_trigg_right, "calibrate_trigger", TRIGGER_CALIBRATE,
 		     RIGHT_CONTROLLER, index);
 static DEVICE_ATTR_RO_NAMED(cal_trigg_right_index, "calibrate_trigger_index");
 
-static struct go_cfg_attr cal_joy_right = { JOYSTICK_CALIBRATE };
-LEGO_CAL_DEVICE_ATTR(cal_joy_right, "calibrate_joystick", SET_JOYSTICK_CFG,
+static struct go_cal_cfg_attr cal_joy_right = {
+	SET_JOYSTICK_CFG, &drvdata.gp_right_joy_cal_status
+};
+LEGO_CAL_DEVICE_ATTR(cal_joy_right, "calibrate_joystick", JOYSTICK_CALIBRATE,
 		     RIGHT_CONTROLLER, index);
 static DEVICE_ATTR_RO_NAMED(cal_joy_right_index, "calibrate_joystick_index");
 
-static struct go_cfg_attr cal_gyro_right = { GYRO_CALIBRATE };
-LEGO_CAL_DEVICE_ATTR(cal_gyro_right, "calibrate_gyro", SET_GYRO_CFG,
+static struct go_cal_cfg_attr cal_gyro_right = {
+	SET_GYRO_CFG, &drvdata.gp_right_gyro_cal_status
+};
+LEGO_CAL_DEVICE_ATTR(cal_gyro_right, "calibrate_gyro", GYRO_CALIBRATE,
 		     RIGHT_CONTROLLER, index);
 static DEVICE_ATTR_RO_NAMED(cal_gyro_right_index, "calibrate_gyro_index");
 
@@ -2362,9 +2451,9 @@ static int hid_go_cfg_probe(struct hid_device *hdev,
 	if (!buf)
 		return -ENOMEM;
 
+	mutex_init(&drvdata.cfg_mutex);
 	hid_set_drvdata(hdev, &drvdata);
 	drvdata.hdev = hdev;
-	mutex_init(&drvdata.cfg_mutex);
 
 	ret = sysfs_create_groups(&hdev->dev.kobj, top_level_attr_groups);
 	if (ret) {
@@ -2387,8 +2476,6 @@ static int hid_go_cfg_probe(struct hid_device *hdev,
 	}
 
 	drvdata.led_cdev = &go_cdev_rgb.led_cdev;
-
-	init_completion(&drvdata.send_cmd_complete);
 
 	/* Executing calls prior to returning from probe will lock the MCU. Schedule
 	 * initial data call after probe has completed and MCU can accept calls.
@@ -2436,6 +2523,13 @@ static int hid_go_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
+	ep = get_endpoint_address(hdev);
+	if (ep == GO_GP_INTF_IN) {
+		init_completion(&drvdata.cmd.done);
+		spin_lock_init(&drvdata.cmd.lock);
+		drvdata.cmd.pending = false;
+	}
+
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 	if (ret) {
 		hid_err(hdev, "Failed to start HID device\n");
@@ -2449,7 +2543,6 @@ static int hid_go_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
-	ep = get_endpoint_address(hdev);
 	if (ep != GO_GP_INTF_IN) {
 		dev_dbg(&hdev->dev, "Started interface %x as generic HID device\n", ep);
 		return 0;
