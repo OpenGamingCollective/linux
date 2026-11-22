@@ -1,0 +1,98 @@
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/ppt_limit
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(WO) Package Power Tracking (PPT) limit of the CPU in
+		microwatts. This is the maximum power the CPU socket is
+		allowed to draw.
+
+		The value must be within ppt_limit_min and ppt_limit_max and
+		ppt_limit_min plus a multiple of ppt_limit_step, otherwise
+		-EINVAL is returned. The firmware stores the new value and
+		applies it on the next reboot. The firmware does not report
+		the active value, so this attribute cannot be read.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/ppt_limit_min
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/ppt_limit_max
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/ppt_limit_step
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(RO) Minimum, maximum and step size of the PPT limit in
+		microwatts supported by the platform.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/tdc_limit
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(WO) Thermal Design Current (TDC) limit of the CPU in
+		milliamps. This is the maximum current the voltage regulators
+		can deliver over a sustained period.
+
+		The value must be within tdc_limit_min and tdc_limit_max and
+		tdc_limit_min plus a multiple of tdc_limit_step, otherwise
+		-EINVAL is returned. The firmware stores the new value and
+		applies it on the next reboot. The firmware does not report
+		the active value, so this attribute cannot be read.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/tdc_limit_min
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/tdc_limit_max
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/tdc_limit_step
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(RO) Minimum, maximum and step size of the TDC limit in
+		milliamps supported by the platform.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/edc_limit
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(WO) Electrical Design Current (EDC) limit of the CPU in
+		milliamps. This is the peak current the voltage regulators
+		can deliver for a short period.
+
+		The value must be within edc_limit_min and edc_limit_max and
+		edc_limit_min plus a multiple of edc_limit_step, otherwise
+		-EINVAL is returned. The firmware stores the new value and
+		applies it on the next reboot. The firmware does not report
+		the active value, so this attribute cannot be read.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/edc_limit_min
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/edc_limit_max
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/edc_limit_step
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(RO) Minimum, maximum and step size of the EDC limit in
+		milliamps supported by the platform.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/mem_clock
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(RO) Current memory clock (MEMCLK) in MHz. For DDR memory the
+		data rate in MT/s is twice this value, for example 2800 for
+		DDR5-5600.
+
+What:		/sys/bus/wmi/devices/95F20B61-3D44-41F8-87E1-03CBF94C4E8F[-X]/smt_enable
+Date:		February 2027
+KernelVersion:	7.5
+Contact:	Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
+Description:
+		(RW) Simultaneous Multithreading (SMT) setting of the
+		platform firmware. Reading returns 1 if SMT is enabled and 0
+		otherwise.
+
+		Writing 0 or 1 changes the setting. Other values, or a value
+		the firmware does not support, are rejected with -EINVAL. The
+		firmware stores the new value and applies it on the next
+		reboot. Depending on the platform, enabling SMT again may
+		need a power cycle instead of a reboot.
